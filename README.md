@@ -1,450 +1,358 @@
-# Unified Security Platform
+# Unified IoT Security Platform
 
-A comprehensive IoT security platform that integrates vulnerability scanning, network traffic analysis, and intelligent correlation to provide unified security monitoring and incident response.
+A comprehensive security monitoring platform designed for IoT environments, featuring real-time network traffic analysis, vulnerability scanning, and device discovery capabilities.
+
+## Overview
+
+This platform provides enterprise-grade security monitoring through a microservices architecture, combining host-based scanning with containerized analysis services to deliver accurate network visibility and threat detection.
 
 ## Architecture
 
-The platform consists of the following microservices:
+### Core Components
 
-### Core Services
-- **API Gateway** (`api-gateway/`) - Central entry point and request routing
-- **Vulnerability Scanner** (`services/vulnerability-scanner/`) - Network scanning and vulnerability assessment
-- **Traffic Analyzer** (`services/traffic-analyzer/`) - Network traffic monitoring with Suricata IDS
-- **Correlation Engine** (`services/correlation-engine/`) - Security event correlation and incident management
-- **Web Dashboard** (`web-dashboard/`) - Unified web interface
+**Host-Based Services**
+- **Device Scanner** (Port 5555) - Network device discovery using ARP and ICMP
+- **Traffic Monitor** (Port 5556) - Packet-level traffic capture with Wireshark TShark
+  - TCP and UDP protocol support
+  - Accurate byte-level measurements
+  - Real-time connection tracking
 
-### Supporting Infrastructure
-- **MySQL Database** - Unified data storage
-- **Redis** - Caching and message queuing
-- **Elasticsearch & Kibana** - Log analytics and visualization
+**Containerized Services**
+- **API Gateway** (Port 5001) - Unified REST API endpoint
+- **Traffic Analyzer** - Flow processing and database persistence
+- **Vulnerability Scanner** - Asynchronous scanning with Celery task queue
+- **Correlation Engine** - Security event analysis and correlation
+- **Web Dashboard** (Port 8090) - Interactive monitoring interface
 
-## Features
+**Infrastructure Services**
+- MySQL 8.0 - Persistent data storage
+- Redis 6 - Message broker and caching
+- Elasticsearch & Kibana - Log aggregation and visualization
 
-### 🔍 Network Discovery & Vulnerability Assessment
-- Automated network device discovery
-- Port scanning and service fingerprinting
-- CVE vulnerability matching
-- Risk assessment and prioritization
+## Key Features
 
-### 🌐 Network Traffic Analysis
-- Real-time traffic monitoring with Suricata IDS
-- Protocol analysis (HTTP, DNS, TLS, SSH)
-- Anomaly detection and alerting
-- Traffic flow analysis
+### Network Discovery
+- Active device discovery on local network segments
+- Service identification and port enumeration
+- Real-time device inventory management
+- Historical scan result tracking
 
-### 🧠 Intelligent Correlation
-- Cross-correlation of vulnerabilities and network events
-- Behavioral analysis and anomaly detection
+### Traffic Monitoring
+- Live TCP and UDP flow tracking
+- Per-connection byte and packet counting
+- Protocol-aware traffic classification
+- 30-minute rolling window visualization
+- Sub-second data refresh rates
+
+### Vulnerability Management
+- Automated network vulnerability scanning
+- CVE database integration
+- Risk-based prioritization
+- Scan scheduling with Celery workers
+
+### Security Correlation
+- Cross-service event correlation
+- Behavioral anomaly detection
+- Automated incident creation
 - Threat intelligence integration
-- Automated incident creation and management
 
-### 📊 Unified Dashboard
-- Real-time security overview
-- Interactive charts and metrics
+### Web Dashboard
+- Real-time statistics and metrics
+- Interactive line charts with Chart.js
+- Live traffic flow table
 - Device inventory management
-- Security incident tracking
-- Live event streaming
+- Responsive design with loading indicators
+- Cache-busting for fresh data delivery
 
-## Quick Start
+## Prerequisites
 
-### Prerequisites
-- Docker and Docker Compose
-- At least 8GB RAM
+**Required Software**
+- Docker Desktop 4.x or higher
+- Docker Compose 2.x or higher
+- Python 3.11 or higher (for host-based services)
+- Wireshark/TShark 4.x (for traffic monitoring)
+
+**System Requirements**
+- Windows 10/11 (tested) or Linux
+- 8GB RAM minimum (16GB recommended)
 - 20GB free disk space
+- Administrator/root privileges for packet capture
 
-### Installation
+## Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd UnifiedSecurityPlatform
-   ```
+### 1. Clone Repository
+```bash
+git clone https://github.com/YOUR_USERNAME/UnifiedSecurityPlatform.git
+cd UnifiedSecurityPlatform
+```
 
-2. **Configure environment variables:**
-   ```bash
-   cp .env.example .env
-   # Edit .env file with your settings
-   ```
+### 2. Install Wireshark (Windows)
+Download and install from: https://www.wireshark.org/download.html
+- Select "Install TShark" during setup
+- Add to PATH: `C:\Program Files\Wireshark`
 
-3. **Start the platform:**
-   ```bash
-   docker-compose up -d
-   ```
+### 3. Configure Environment
+```bash
+cp .env.example .env
+```
 
-4. **Verify deployment:**
-   ```bash
-   # Check service health
-   curl http://localhost:8000/health
-   
-   # Access web dashboard
-   open http://localhost:8080
-   ```
-
-### Default Access
-
-- **Web Dashboard**: http://localhost:8080
-- **API Gateway**: http://localhost:8000
-- **Kibana**: http://localhost:5601
-- **Database**: localhost:3306
-
-**Default Login:**
-- Username: `admin`
-- Password: `admin123` (⚠️ Change this immediately!)
-
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file with the following variables:
-
+Edit `.env` with your configuration:
 ```bash
 # Database Configuration
 DB_HOST=unified-db
 DB_USER=security_user
 DB_PASS=security_pass
-DB_NAME=unified_security
-DB_ROOT_PASS=rootpassword
+DB_NAME=unified_security_db
 
 # Redis Configuration
 REDIS_HOST=redis
 REDIS_PORT=6379
 
-# Security Configuration
-JWT_SECRET=your-secret-key-here
-FLASK_DEBUG=false
-
-# Network Configuration
-FALLBACK_SUBNET=192.168.1.0/24
-SCAN_INTERFACE=eth0
-
-# Service URLs (for internal communication)
-VULNERABILITY_SERVICE_URL=http://vulnerability-scanner:5001
-TRAFFIC_SERVICE_URL=http://traffic-analyzer:5002
-CORRELATION_SERVICE_URL=http://correlation-engine:5003
+# API Configuration
+API_PORT=5001
+DASHBOARD_PORT=8090
 ```
 
-### Network Scanning Configuration
-
-Edit `config/scanner-config.yml`:
-
-```yaml
-scanner:
-  default_range: "192.168.1.0/24"
-  scan_timeout: 300
-  max_concurrent_scans: 3
-  
-vulnerability_matching:
-  cve_database_url: "https://services.nvd.nist.gov/rest/json/cves/1.0/"
-  update_interval: 86400  # 24 hours
-  
-correlation:
-  rules_enabled: true
-  processing_interval: 30
-  max_incident_age: 30
-```
-
-## Usage
-
-### Starting a Network Scan
-
-#### Via Web Dashboard
-1. Navigate to the "Scans" section
-2. Click "New Scan"
-3. Enter target network range (e.g., `192.168.1.0/24`)
-4. Click "Start Scan"
-
-#### Via API
+### 4. Start Docker Services
 ```bash
-curl -X POST http://localhost:8000/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{"target_range": "192.168.1.0/24"}'
+docker-compose up -d
 ```
 
-### Viewing Results
+Wait for all services to initialize (approximately 60 seconds).
 
-#### Dashboard Overview
-- Navigate to http://localhost:8080
-- View real-time metrics and charts
-- Monitor security incidents and alerts
+### 5. Start Host-Based Services
 
-#### Detailed Analysis
-- **Devices**: View discovered devices and their security status
-- **Vulnerabilities**: Browse detected vulnerabilities by severity
-- **Traffic**: Analyze network flows and security alerts
-- **Incidents**: Review correlated security incidents
-
-### API Documentation
-
-The platform provides RESTful APIs for all functionality:
-
-#### Authentication
+**Device Scanner:**
 ```bash
-# Login
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
+python host_scanner_api.py
+```
+Service will run on port 5555.
+
+**Traffic Monitor (requires Administrator):**
+```powershell
+# Run PowerShell as Administrator
+python host_traffic_monitor_tshark.py
+```
+Service will run on port 5556.
+
+### 6. Access Dashboard
+Open browser: http://localhost:8090
+
+## Service Endpoints
+
+| Service | Port | Endpoint | Description |
+|---------|------|----------|-------------|
+| Web Dashboard | 8090 | http://localhost:8090 | Main UI |
+| API Gateway | 5001 | http://localhost:5001 | REST API |
+| Device Scanner | 5555 | http://localhost:5555 | Host scanner |
+| Traffic Monitor | 5556 | http://localhost:5556 | TShark capture |
+| Kibana | 5601 | http://localhost:5601 | Log viewer |
+| MySQL | 3306 | localhost:3306 | Database |
+
+## Configuration
+
+### Network Interface Selection
+
+Edit `host_traffic_monitor_tshark.py` to set your network interface:
+```python
+interface_name = 'Wi-Fi 2'  # Change to your interface name
 ```
 
-#### Scanning
+Find your interface name:
+```powershell
+# Windows
+Get-NetAdapter | Select-Object Name, InterfaceDescription
+
+# Linux
+ip link show
+```
+
+### Database Configuration
+
+Connection settings in `.env`:
 ```bash
-# Start scan
-curl -X POST http://localhost:8000/api/scans \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"target_range": "192.168.1.0/24"}'
-
-# Get scan status
-curl http://localhost:8000/api/scans/<scan_id> \
-  -H "Authorization: Bearer <token>"
+DB_HOST=unified-db
+DB_PORT=3306
+DB_USER=security_user
+DB_PASS=security_pass
+DB_NAME=unified_security_db
 ```
 
-#### Device Management
-```bash
-# List devices
-curl http://localhost:8000/api/devices \
-  -H "Authorization: Bearer <token>"
+## API Documentation
 
-# Get vulnerabilities
-curl http://localhost:8000/api/vulnerabilities \
-  -H "Authorization: Bearer <token>"
+### Device Scanner API
+
+**Get Network Devices**
+```http
+GET http://localhost:5555/scan
 ```
 
-## Advanced Configuration
-
-### Custom Correlation Rules
-
-Create custom correlation rules to detect specific threat patterns:
-
+Response:
 ```json
 {
-  "rule_name": "Brute Force Detection",
-  "rule_type": "behavioral",
-  "condition_query": {
-    "conditions": [
-      {
-        "type": "failed_login_attempts",
-        "threshold": 10,
-        "time_window": 300
-      }
-    ]
-  },
-  "severity": "high",
-  "description": "Detects potential brute force attacks"
+  "status": "success",
+  "devices": [
+    {
+      "ip": "192.168.1.100",
+      "mac": "AA:BB:CC:DD:EE:FF",
+      "hostname": "device-name",
+      "is_gateway": false
+    }
+  ]
 }
 ```
 
-### Threat Intelligence Integration
+### Traffic Monitor API
 
-Add threat intelligence feeds:
-
-```bash
-curl -X POST http://localhost:8000/api/threat-intelligence \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "indicator": "192.168.100.100",
-    "indicator_type": "ip",
-    "threat_type": "botnet",
-    "confidence": 0.9,
-    "source": "manual"
-  }'
+**Get Active Connections**
+```http
+GET http://localhost:5556/connections
 ```
 
-### Suricata Rules
-
-Custom Suricata rules can be added to `services/traffic-analyzer/suricata-config/rules/`:
-
-```
-alert tcp any any -> any 22 (msg:"SSH Brute Force Attempt"; flow:to_server; threshold:type both, track by_src, count 10, seconds 60; sid:1000001; rev:1;)
-```
-
-## Monitoring and Maintenance
-
-### Health Monitoring
-
-Check service health:
-```bash
-# Overall platform health
-curl http://localhost:8000/health
-
-# Individual service health
-curl http://localhost:5001/health  # Vulnerability Scanner
-curl http://localhost:5002/health  # Traffic Analyzer
-curl http://localhost:5003/health  # Correlation Engine
+Response:
+```json
+{
+  "status": "success",
+  "total_connections": 45,
+  "capture_active": true,
+  "connections": [
+    {
+      "protocol": "tcp",
+      "src_ip": "192.168.1.100",
+      "dest_ip": "1.2.3.4",
+      "src_port": 54321,
+      "dest_port": 443,
+      "bytes_sent": 15240,
+      "bytes_recv": 98750,
+      "state": "established"
+    }
+  ]
+}
 ```
 
-### Log Management
+## Usage Guide
 
-View service logs:
-```bash
-# All services
-docker-compose logs -f
+### Starting a Network Scan
 
-# Specific service
-docker-compose logs -f vulnerability-scanner
-docker-compose logs -f traffic-analyzer
-docker-compose logs -f correlation-engine
-```
+1. Navigate to Dashboard (http://localhost:8090)
+2. Click "Start Scan" button
+3. Wait for scan completion (typically 30-60 seconds)
+4. View discovered devices in the table below
 
-### Database Backup
+### Monitoring Traffic
 
-Backup the unified database:
-```bash
-docker-compose exec unified-db mysqldump -u root -p unified_security > backup.sql
-```
-
-### Performance Tuning
-
-#### Resource Allocation
-Adjust container resources in `docker-compose.yml`:
-
-```yaml
-services:
-  vulnerability-scanner:
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '1.0'
-```
-
-#### Database Optimization
-For large deployments, tune MySQL configuration:
-
-```ini
-[mysqld]
-innodb_buffer_pool_size = 2G
-max_connections = 200
-query_cache_size = 256M
-```
+1. Ensure TShark monitor is running (port 5556)
+2. Click "Traffic" in the navigation menu
+3. View real-time traffic statistics and flows
+4. Charts update every 5 seconds automatically
 
 ## Troubleshooting
 
-### Common Issues
+### TShark Not Capturing Packets
 
-1. **Services fail to start**
-   ```bash
-   # Check Docker resources
-   docker system df
-   docker system prune -f
-   
-   # Verify network connectivity
-   docker-compose exec api-gateway ping unified-db
+**Symptom:** Traffic flows showing 0 bytes
+
+**Solution:**
+1. Verify TShark is running as Administrator
+2. Check interface name is correct in `host_traffic_monitor_tshark.py`
+3. Test TShark manually:
+   ```powershell
+   tshark -i "Wi-Fi 2" -c 10
    ```
 
-2. **Database connection errors**
+### Docker Services Not Starting
+
+**Symptom:** Services fail to start or show unhealthy
+
+**Solution:**
+1. Check Docker Desktop is running
+2. Verify port availability:
+   ```powershell
+   netstat -ano | findstr "3306 5001 8090"
+   ```
+3. Review logs:
    ```bash
-   # Check database status
-   docker-compose logs unified-db
-   
-   # Verify credentials
-   docker-compose exec unified-db mysql -u security_user -p unified_security
+   docker-compose logs -f [service-name]
    ```
 
-3. **Network scanning not working**
+### Database Connection Errors
+
+**Symptom:** API returns database connection errors
+
+**Solution:**
+1. Verify MySQL container is running:
    ```bash
-   # Check scanner permissions
-   docker-compose logs vulnerability-scanner
-   
-   # Verify network access
-   docker-compose exec vulnerability-scanner nmap -sP 192.168.1.0/24
+   docker ps | grep unified_security_db
+   ```
+2. Test database connection:
+   ```bash
+   docker exec unified_security_db mysql -u security_user -psecurity_pass -e "SELECT 1"
+   ```
+3. Restart services if needed:
+   ```bash
+   docker-compose restart traffic_analyzer_service
    ```
 
-### Debug Mode
+## Development
 
-Enable debug logging:
-```bash
-# Set environment variable
-export FLASK_DEBUG=true
-
-# Restart services
-docker-compose restart
+### Project Structure
 ```
+UnifiedSecurityPlatform/
+├── api-gateway/              # API Gateway service
+├── services/
+│   ├── traffic-analyzer/     # Traffic flow processing
+│   ├── vulnerability-scanner/# Vulnerability scanning
+│   ├── correlation-engine/   # Event correlation
+│   └── network-scanner/      # Network scanning scripts
+├── shared/
+│   └── database/             # Database schemas
+├── web-dashboard/            # Frontend application
+├── host_scanner_api.py       # Host device scanner
+├── host_traffic_monitor_tshark.py  # TShark monitor
+└── docker-compose.yml        # Service orchestration
+```
+
+### Database Schema
+
+Tables:
+- `devices` - Discovered network devices
+- `traffic_flows` - Network traffic records
+- `vulnerabilities` - Detected vulnerabilities
+- `incidents` - Security incidents
+- `scans` - Scan history
+
+See `shared/database/init.sql` for complete schema.
 
 ## Security Considerations
 
 ### Production Deployment
 
-⚠️ **Important Security Settings for Production:**
+1. **Change Default Credentials**
+   - Update database passwords in `.env`
+   - Use strong passwords (16+ characters)
 
-1. **Change default passwords**
-   - Database root password
-   - Default admin user password
-   - JWT secret key
+2. **Network Segmentation**
+   - Deploy in isolated VLAN
+   - Restrict access to management interfaces
+   - Use firewall rules for service access
 
-2. **Network Security**
-   - Use HTTPS with valid SSL certificates
-   - Implement network segmentation
-   - Configure firewall rules
+3. **TLS/SSL Configuration**
+   - Enable HTTPS for web dashboard
+   - Configure certificate for API Gateway
 
-3. **Access Control**
-   - Enable authentication for all services
-   - Implement role-based access control
-   - Use strong password policies
-
-4. **Data Protection**
-   - Enable database encryption at rest
-   - Configure secure backup procedures
-   - Implement audit logging
-
-### Security Best Practices
-
-- Regularly update container images
-- Monitor security advisories for dependencies
-- Implement network monitoring
-- Use secrets management for sensitive data
-- Regular security assessments
-
-## Development
-
-### Local Development Setup
-
-1. **Install development dependencies:**
-   ```bash
-   pip install -r requirements-dev.txt
-   ```
-
-2. **Run services locally:**
-   ```bash
-   # Start database and Redis
-   docker-compose up -d unified-db redis
-   
-   # Run services locally for development
-   cd services/vulnerability-scanner && python app.py
-   cd services/correlation-engine && python app.py
-   ```
-
-### Adding New Services
-
-1. Create service directory under `services/`
-2. Implement Flask application with health endpoint
-3. Add service to `docker-compose.yml`
-4. Update API Gateway routing
-5. Add service monitoring
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Implement changes with tests
-4. Submit a pull request
+4. **Access Control**
+   - Implement authentication for API endpoints
+   - Use role-based access control (RBAC)
+   - Enable audit logging
 
 ## License
 
-This project is licensed under the MIT License. See LICENSE file for details.
+This project is licensed under the MIT License - see LICENSE file for details.
 
-## Support
+## Acknowledgments
 
-For support and questions:
-- Create an issue in the repository
-- Check the troubleshooting section
-- Review logs for error details
-
-## Changelog
-
-### Version 1.0.0
-- Initial release with unified platform
-- Vulnerability scanning integration
-- Traffic analysis with Suricata
-- Correlation engine implementation
-- Web dashboard interface
+- Wireshark/TShark for packet capture capabilities
+- Chart.js for visualization components
+- Docker and Docker Compose for containerization
+- Flask framework for microservices
+- Celery for asynchronous task processing
