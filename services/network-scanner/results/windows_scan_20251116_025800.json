@@ -1,9 +1,0 @@
-{
-  "scan_time": "2025-11-16T02:58:00+00:00",
-  "network_range": "172.20.10.0/24",
-  "scanner": "nmap-windows-docker",
-  "host_gateway": "",
-  "methods_used": ["host_gateway", "tcp_probe", "nmap_direct"],
-  "total_hosts_found": 0,
-  "hosts": []
-}

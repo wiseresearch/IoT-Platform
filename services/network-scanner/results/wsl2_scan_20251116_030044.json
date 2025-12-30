@@ -1,8 +1,0 @@
-{
-  "scan_time": "2025-11-16T03:00:44+00:00",
-  "network_range": "172.20.10.0/24",
-  "scanner": "nmap-wsl2",
-  "methods_used": ["interface_check", "gateway_bridge", "direct_aggressive", "arp_discovery", "tcp_connect"],
-  "total_hosts_found": 0,
-  "hosts": []
-}
