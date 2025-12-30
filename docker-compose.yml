@@ -1,0 +1,280 @@
+services:
+  # === Network Scanner Service (WSL2-optimized) ===
+  network-scanner:
+    image: instrumentisto/nmap
+    container_name: network_scanner
+    restart: always
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_ADMIN
+    privileged: true
+    pid: host
+    network_mode: host
+    entrypoint: ["/bin/sh"]
+    command: ["-c", "while true; do sleep 30; done"]
+    volumes:
+      - ./services/network-scanner:/scripts
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+  # === Shared Database (MySQL) ===
+  unified-db:
+    image: mysql:8.0
+    container_name: unified_security_db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: unified_security
+      MYSQL_USER: security_user
+      MYSQL_PASSWORD: security_pass
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./shared/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "33061:3306"
+    networks:
+      - security-net
+
+  # === Shared Redis for Caching & Message Queue ===
+  redis:
+    image: redis:6-alpine
+    container_name: unified_security_redis
+    restart: always
+    ports:
+      - "63790:6379"
+    networks:
+      - security-net
+
+  # === API Gateway ===
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: unified_api_gateway
+    restart: always
+    ports:
+      - "8080:8000"
+    depends_on:
+      - unified-db
+      - redis
+    environment:
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+      - REDIS_HOST=redis
+      - VULNERABILITY_SERVICE_URL=http://host.docker.internal:5001
+      - TRAFFIC_SERVICE_URL=http://traffic-analyzer:5002
+      - CORRELATION_SERVICE_URL=http://correlation-engine:5003
+    networks:
+      - security-net
+
+  # === Vulnerability Scanner Service ===
+  vulnerability-scanner:
+    build:
+      context: ./services/vulnerability-scanner
+      dockerfile: Dockerfile
+    container_name: vulnerability_scanner_service
+    restart: always
+    ports:
+      - "5001:5001"
+    depends_on:
+      - unified-db
+      - redis
+    environment:
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+      - REDIS_HOST=host.docker.internal
+      - CELERY_BROKER_URL=redis://host.docker.internal:63790/0
+      - CELERY_RESULT_BACKEND=redis://host.docker.internal:63790/1
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    privileged: true
+    networks:
+      - security-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # === Vulnerability Scanner Celery Worker ===
+  vuln-celery-worker:
+    build:
+      context: ./services/vulnerability-scanner
+      dockerfile: Dockerfile
+    container_name: vuln_celery_worker
+    restart: always
+    depends_on:
+      - vulnerability-scanner
+      - redis
+      - unified-db
+    environment:
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    privileged: true
+    networks:
+      - security-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >
+      celery -A app.celery worker --loglevel=info
+
+  # === Traffic Analyzer Service (Suricata + gRPC) ===
+  traffic-analyzer:
+    build:
+      context: ./services/traffic-analyzer
+      dockerfile: Dockerfile
+    container_name: traffic_analyzer_service
+    restart: always
+    ports:
+      - "5002:5002"
+      - "50051:50051"  # gRPC port
+    depends_on:
+      - unified-db
+      - redis
+    environment:
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+      - REDIS_HOST=redis
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    networks:
+      - security-net
+
+  # === NAT Router for Traffic Management ===
+  nat-router:
+    build:
+      context: ./services/traffic-analyzer/nat-router
+      dockerfile: Dockerfile
+    container_name: unified_nat_router
+    restart: always
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./services/traffic-analyzer/suricata-config:/etc/suricata
+      - suricata_logs:/var/log/suricata
+      - ./services/traffic-analyzer/suricata-quarantine:/usr/local/bin/
+    cap_add:
+      - NET_ADMIN
+    privileged: true
+    dns:
+      - 8.8.8.8
+    networks:
+      security-net:
+        ipv4_address: 10.10.0.7
+      monitor-net:
+        ipv4_address: 10.11.0.100
+
+  # === Correlation Engine Service ===
+  correlation-engine:
+    build:
+      context: ./services/correlation-engine
+      dockerfile: Dockerfile
+    container_name: correlation_engine_service
+    restart: always
+    ports:
+      - "5003:5003"
+    depends_on:
+      - unified-db
+      - redis
+      - vulnerability-scanner
+      - traffic-analyzer
+    environment:
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+      - REDIS_HOST=redis
+      - VULNERABILITY_SERVICE_URL=http://host.docker.internal:5001
+      - TRAFFIC_SERVICE_URL=http://traffic-analyzer:5002
+    networks:
+      - security-net
+
+  # === Unified Web Dashboard ===
+  web-dashboard:
+    build:
+      context: ./web-dashboard
+      dockerfile: Dockerfile
+    container_name: unified_web_dashboard
+    restart: always
+    ports:
+      - "8090:80"
+    depends_on:
+      - api-gateway
+      - unified-db
+    environment:
+      - API_GATEWAY_URL=http://api-gateway:8000
+      - DB_HOST=unified-db
+      - DB_USER=security_user
+      - DB_PASS=security_pass
+      - DB_NAME=unified_security
+    volumes:
+      - ./web-dashboard:/usr/share/nginx/html:delegated
+      - dashboard_storage:/usr/share/nginx/html/storage
+      - dashboard_cache:/usr/share/nginx/html/bootstrap/cache
+    networks:
+      - security-net
+
+  # === ELK Stack for Log Analytics ===
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: unified_elasticsearch
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - security-net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: unified_kibana
+    restart: always
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - security-net
+
+volumes:
+  mysql_data:
+  suricata_logs:
+  dashboard_storage:
+  dashboard_cache:
+  elasticsearch_data:
+
+networks:
+  security-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
+    ipam:
+      config:
+        - subnet: 10.10.0.0/24
+  monitor-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.11.0.0/24
+          gateway: 10.11.0.1

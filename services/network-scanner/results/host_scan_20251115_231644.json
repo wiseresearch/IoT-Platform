@@ -1,0 +1,87 @@
+﻿{
+    "network_range":  "172.20.10.0/24",
+    "methods_used":  [
+                         "ping_sweep",
+                         "arp_table",
+                         "port_scan"
+                     ],
+    "hosts":  [
+                  {
+                      "services":  [
+                                       {
+                                           "port":  135,
+                                           "service":  "RPC",
+                                           "state":  "open"
+                                       },
+                                       {
+                                           "port":  139,
+                                           "service":  "NetBIOS",
+                                           "state":  "open"
+                                       },
+                                       {
+                                           "port":  445,
+                                           "service":  "SMB",
+                                           "state":  "open"
+                                       },
+                                       {
+                                           "port":  8080,
+                                           "service":  "HTTP-Alt",
+                                           "state":  "open"
+                                       }
+                                   ],
+                      "open_ports":  [
+                                         135,
+                                         139,
+                                         445,
+                                         8080
+                                     ],
+                      "device_type":  "Windows Device",
+                      "ip":  "172.20.10.2",
+                      "scan_method":  "host_powershell",
+                      "status":  "up"
+                  },
+                  {
+                      "services":  [
+                                       {
+                                           "port":  53,
+                                           "service":  "DNS",
+                                           "state":  "open"
+                                       }
+                                   ],
+                      "open_ports":  [
+                                         53
+                                     ],
+                      "device_type":  "Unknown Device",
+                      "ip":  "172.20.10.1",
+                      "scan_method":  "host_powershell",
+                      "status":  "up"
+                  },
+                  {
+                      "services":  [
+
+                                   ],
+                      "open_ports":  [
+
+                                     ],
+                      "device_type":  "Unknown Device",
+                      "ip":  "172.20.10.5",
+                      "scan_method":  "host_powershell",
+                      "status":  "up"
+                  },
+                  {
+                      "services":  [
+
+                                   ],
+                      "open_ports":  [
+
+                                     ],
+                      "device_type":  "Unknown Device",
+                      "ip":  "172.20.10.15",
+                      "scan_method":  "host_powershell",
+                      "status":  "up"
+                  }
+              ],
+    "scanner":  "powershell-host",
+    "scan_time":  "2025-11-15T23:16:44-05:00",
+    "total_hosts_found":  4
+}

@@ -1,0 +1,5 @@
+{
+  "scan_time": "2025-11-16T02:36:20+00:00",
+  "network_range": "172.20.10.0/24",
+  "scanner": "nmap-windows-docker",
+  "host_gateway": "",
