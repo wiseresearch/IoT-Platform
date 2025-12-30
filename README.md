@@ -1,4 +1,4 @@
-# Unified IoT Security Platform
+# IoT Security Platform
 
 A comprehensive security monitoring platform designed for IoT environments, featuring real-time network traffic analysis, vulnerability scanning, and device discovery capabilities.
 
@@ -82,8 +82,8 @@ This platform provides enterprise-grade security monitoring through a microservi
 
 ### 1. Clone Repository
 ```bash
-git clone https://github.com/YOUR_USERNAME/UnifiedSecurityPlatform.git
-cd UnifiedSecurityPlatform
+git clone https://github.com/wiseresearch/IoT-Platform.git
+cd IoT-Platform
 ```
 
 ### 2. Install Wireshark (Windows)
@@ -297,7 +297,7 @@ Response:
 
 ### Project Structure
 ```
-UnifiedSecurityPlatform/
+IoTSecurityPlatform/
 ├── api-gateway/              # API Gateway service
 ├── services/
 │   ├── traffic-analyzer/     # Traffic flow processing
