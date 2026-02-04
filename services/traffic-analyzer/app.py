@@ -36,7 +36,7 @@ def wait_for_dependencies():
             print(f"Database connection attempt {attempt + 1} failed: {str(e)}")
             time.sleep(retry_delay)
     
-    # Wait for Redis
+    # Wait for Redis 
     redis_config = {
         'host': os.getenv('REDIS_HOST', 'redis'),
         'port': 6379,

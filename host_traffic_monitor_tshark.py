@@ -9,12 +9,18 @@ import threading
 import time
 from collections import defaultdict
 
+
+
 app = Flask(__name__)
 
 # Global storage for traffic statistics
 traffic_stats = defaultdict(lambda: {'bytes_sent': 0, 'bytes_recv': 0, 'packets_sent': 0, 'packets_recv': 0})
 capture_running = False
 capture_thread = None
+
+# DHCP fingerprint storage
+dhcp_fingerprints = {}
+
 
 @app.after_request
 def after_request(response):
@@ -129,6 +135,42 @@ def get_connections():
             "message": str(e)
         }), 500
 
+@app.route('/dhcp/devices', methods=['GET'])
+def get_dhcp_devices():
+    devices = []
+    now = time.time()
+
+    for mac, data in dhcp_fingerprints.items():
+
+        #  Ignore les devices trop anciens (5 minutes)
+        if now - data["last_seen"] > 300:
+            continue
+
+        os_name, confidence = infer_os_with_confidence(
+            data.get("param_req", []),
+            mac=mac,
+            ttl=data.get("ttl_guess"),
+            hostname=data.get("hostname"),
+            vendor_class=data.get("vendor_class")
+        )
+
+        devices.append({
+            "mac_address": mac,
+            "hostname": data.get("hostname"),
+            "vendor_class": data.get("vendor_class"),
+            "ttl_guess": data.get("ttl_guess"),
+            "os": os_name,
+            "os_confidence": confidence,
+            "last_seen": datetime.fromtimestamp(data["last_seen"]).isoformat()
+        })
+
+    return jsonify({
+        "status": "success",
+        "devices": devices
+    })
+
+
+
 @app.route('/start-capture', methods=['POST'])
 def start_capture():
     """Start tshark packet capture"""
@@ -145,156 +187,277 @@ def start_capture():
 
 @app.route('/stop-capture', methods=['POST'])
 def stop_capture():
-    """Stop tshark packet capture"""
     global capture_running
+
     capture_running = False
-    return jsonify({"status": "stopped"})
+
+    # Attendre que tshark ferme correctement le fichier PCAP
+    time.sleep(2)
+
+    # ÉTAPE 2 : analyse du PCAP
+    analyze_dhcp_pcap()
+
+    return jsonify({
+        "status": "stopped",
+        "devices_found": len(dhcp_fingerprints)
+    })
+
 
 def capture_traffic():
-    """Capture traffic using tshark and update statistics"""
-    global traffic_stats, capture_running
-    
+    global capture_running
+
     tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
-    
-    # Capture command: -i any (all interfaces), -T fields for custom output
-    # Capture: src IP, dst IP, src port, dst port, frame length
-    # Use interface name "Wi-Fi 2" which is the active adapter with IP 172.20.10.2
-    interface_name = 'Wi-Fi 2'
-    
+
     cmd = [
         tshark_path,
-        '-i', interface_name,
-        '-f', 'tcp or udp',  # Capture filter for TCP and UDP
-        '-T', 'fields',
-        '-e', 'ip.src',
-        '-e', 'ip.dst',
-        '-e', 'ip.proto',  # Protocol number (6=TCP, 17=UDP)
-        '-e', 'tcp.srcport',
-        '-e', 'tcp.dstport',
-        '-e', 'udp.srcport',
-        '-e', 'udp.dstport',
-        '-e', 'frame.len',
-        '-E', 'separator=,'
+        "-i", "6",
+        "-f", "udp port 67 or udp port 68",
+        "-w", "dhcp_capture.pcap"
     ]
-    
-    print(f"🔍 Starting tshark capture on interface '{interface_name}'")
-    print(f"   Command: {' '.join(cmd)}")
-    print(f"   Filtering: TCP and UDP traffic")
-    print(f"   Fields: src_ip, dst_ip, protocol, src_port, dst_port, frame_length")
-    print("   Waiting for packets...")
-    
-    try:
-        import sys
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Redirect stderr to stdout
-            text=True,
-            bufsize=0,  # Unbuffered
-            universal_newlines=True
-        )
-        
-        print("✅ TShark process started successfully!")
-        print(f"   PID: {process.pid}")
-        sys.stdout.flush()
-        packet_count = 0
-        
-        # Read from stdout line by line
-        while capture_running:
-            try:
-                line = process.stdout.readline()
-                if not line:
-                    # Check if process ended
-                    if process.poll() is not None:
-                        print(f"⚠️ TShark process ended unexpectedly (exit code: {process.returncode})")
-                        # Read any error output
-                        stderr = process.stderr.read()
-                        if stderr:
-                            print(f"❌ TShark error: {stderr}")
-                        break
+
+    print("🔍 Capturing DHCP traffic to dhcp_capture.pcap")
+
+    process = subprocess.Popen(cmd)
+
+    while capture_running:
+        time.sleep(1)
+
+    process.terminate()
+    print("🛑 Capture stopped")
+
+
+
+
+def analyze_dhcp_pcap():
+    global dhcp_fingerprints
+    dhcp_fingerprints.clear()
+
+    tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
+
+    cmd = [
+        tshark_path,
+        "-r", "dhcp_capture.pcap",
+        "-T", "fields",
+        "-e", "bootp.hw.mac_addr",
+        "-e", "dhcp.option.request_list_item",
+        "-e", "ip.ttl",
+        "-e", "bootp.option.hostname",
+        "-e", "bootp.option.vendor_class_id",
+        "-E", "separator=|"
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    prl_by_mac = defaultdict(list)
+    ttl_by_mac = defaultdict(list)
+    hostname_by_mac = {}
+    vendor_by_mac = {}
+
+    for line in result.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+
+        mac = parts[0].split(",")[0].strip()
+
+        item = parts[1].strip()
+        ttl_raw = parts[2].strip() if len(parts) > 2 else ""
+        hostname = parts[3].strip() if len(parts) > 3 else ""
+        vendor_class = parts[4].strip() if len(parts) > 4 else ""
+
+        if mac and item:
+            # TShark peut renvoyer une liste CSV sur une seule ligne: "1,3,6,15,..."
+            # On stocke chaque code séparément pour une signature DHCP correcte.
+            for token in item.split(","):
+                token = token.strip()
+                if token:
+                    prl_by_mac[mac].append(token)
+        if mac and ttl_raw:
+            for t in ttl_raw.split(","):
+                t = t.strip()
+                if not t:
                     continue
-                
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Parse the CSV line: src_ip,dst_ip,proto,tcp_src,tcp_dst,udp_src,udp_dst,frame_len
-                parts = line.split(',')
-                if len(parts) >= 8:
-                    src_ip = parts[0]
-                    dst_ip = parts[1]
-                    proto_num = parts[2]  # 6=TCP, 17=UDP
-                    tcp_src = parts[3]
-                    tcp_dst = parts[4]
-                    udp_src = parts[5]
-                    udp_dst = parts[6]
-                    frame_len = parts[7]
-                    
-                    # Determine protocol and ports
-                    if proto_num == '6' and tcp_src and tcp_dst:  # TCP
-                        src_port = tcp_src
-                        dst_port = tcp_dst
-                    elif proto_num == '17' and udp_src and udp_dst:  # UDP
-                        src_port = udp_src
-                        dst_port = udp_dst
-                    else:
-                        continue
-                    
-                    # Skip if any required field is empty
-                    if not all([src_ip, dst_ip, src_port, dst_port, frame_len]):
-                        continue
-                    
-                    src_port = int(src_port) if str(src_port).isdigit() else 0
-                    dst_port = int(dst_port) if str(dst_port).isdigit() else 0
-                    frame_len = int(frame_len) if frame_len.isdigit() else 0
-                    
-                    packet_count += 1
-                    if packet_count == 1:
-                        print(f"🎉 First packet captured!")
-                        sys.stdout.flush()
-                    if packet_count % 50 == 0:
-                        print(f"📦 Captured {packet_count} packets, tracking {len(traffic_stats)} connections")
-                        sys.stdout.flush()
-                    
-                    # Update stats for outgoing traffic (from local host)
-                    if src_ip.startswith('172.20.10.'):
-                        conn_key = f"{src_ip}:{src_port}-{dst_ip}:{dst_port}"
-                        traffic_stats[conn_key]['bytes_sent'] += frame_len
-                        traffic_stats[conn_key]['packets_sent'] += 1
-                        traffic_stats[conn_key]['last_seen'] = time.time()
-                    
-                    # Update stats for incoming traffic (to local host)
-                    if dst_ip.startswith('172.20.10.'):
-                        conn_key = f"{dst_ip}:{dst_port}-{src_ip}:{src_port}"
-                        traffic_stats[conn_key]['bytes_recv'] += frame_len
-                        traffic_stats[conn_key]['packets_recv'] += 1
-                        traffic_stats[conn_key]['last_seen'] = time.time()
-                        
-            except ValueError as e:
-                if packet_count == 0:
-                    print(f"⚠️ Error parsing packet data: {e}")
-                    print(f"   Raw line: {line}")
-                    sys.stdout.flush()
-                continue
-            except Exception as e:
-                if packet_count == 0:
-                    print(f"⚠️ Unexpected error in capture loop: {e}")
-                    sys.stdout.flush()
-                continue
-        
-        # Process ended
-        print(f"\n🛑 Capture loop ended. Processed {packet_count} packets.")
-        sys.stdout.flush()
-                
-    except Exception as e:
-        import sys
-        print(f"❌ TShark capture error: {e}")
-        print(f"   Make sure you're running as Administrator!")
-        sys.stdout.flush()
-    finally:
-        capture_running = False
-        print("🏁 Capture thread ended")
-        sys.stdout.flush()
+                try:
+                    ttl_val = int(t)
+                    if 1 <= ttl_val <= 255:
+                        ttl_by_mac[mac].append(ttl_val)
+                except ValueError:
+                    pass
+        if mac and hostname and mac not in hostname_by_mac:
+            hostname_by_mac[mac] = hostname
+        if mac and vendor_class and mac not in vendor_by_mac:
+            vendor_by_mac[mac] = vendor_class
+
+    def infer_initial_ttl(ttl_values):
+        if not ttl_values:
+            return None
+        # Heuristique type Zeek/p0f: normaliser vers la base TTL la plus proche
+        avg_ttl = sum(ttl_values) / len(ttl_values)
+        for base in (32, 60, 64, 128, 255):
+            if avg_ttl <= base:
+                return base
+        return 255
+
+
+    for mac, prl in prl_by_mac.items():
+        # suppression des doublons + nettoyage
+        clean_prl = sorted(set(p for p in prl if p))
+        ttl_guess = infer_initial_ttl(ttl_by_mac.get(mac, []))
+
+        dhcp_fingerprints[mac] = {
+            "hostname": hostname_by_mac.get(mac),
+            "vendor_class": vendor_by_mac.get(mac),
+            "param_req": clean_prl,
+            "ttl_guess": ttl_guess,
+            "last_seen": time.time()
+        }
+
+
+
+
+
+
+def infer_os_with_confidence(opts, mac=None, ttl=None, hostname=None, vendor_class=None):
+    if not opts:
+        return "Unknown", 30
+
+    # Normalisation robuste: int/str + éclatement des listes "1,3,6,15"
+    normalized_opts = set()
+    for raw in opts:
+        if raw is None:
+            continue
+        for token in str(raw).split(","):
+            token = token.strip()
+            if token:
+                normalized_opts.add(token)
+    opts = normalized_opts
+    mac = (mac or "").lower().replace("-", ":")
+    hostname = (hostname or "").lower()
+    vendor_class = (vendor_class or "").lower()
+
+    # Score de base (DHCP + TTL)
+    scores = {
+        "Windows": 0,
+        "Android": 0,
+        "iOS": 0,
+        "Linux": 0,
+        "IoT / Embedded": 0
+    }
+
+    # ───────────────── DHCP PRL signatures (style Zeek) ─────────────────
+    has_android_core = {"26", "28"}.issubset(opts)
+    has_ios_core = {"119", "252"}.issubset(opts) or {"95", "252"}.issubset(opts)
+    has_windows_core = {"44", "46", "47"}.issubset(opts) or "249" in opts
+
+    if {"44", "46", "47"}.issubset(opts):
+        scores["Windows"] += 45
+    if "249" in opts:
+        scores["Windows"] += 35
+    if "43" in opts:
+        scores["Windows"] += 16
+    if {"1", "3", "6", "15"}.issubset(opts):
+        scores["Windows"] += 4
+
+    if {"26", "28"}.issubset(opts):
+        scores["Android"] += 45
+    if "114" in opts:
+        scores["Android"] += 16
+    if {"51", "58", "59"}.issubset(opts):
+        scores["Android"] += 10
+
+    if {"119", "252"}.issubset(opts):
+        scores["iOS"] += 36
+    if {"95", "252"}.issubset(opts):
+        scores["iOS"] += 28
+    if "95" in opts:
+        scores["iOS"] += 8
+    if {"1", "3", "6", "15"}.issubset(opts):
+        scores["iOS"] += 4
+
+    if {"17", "23"}.issubset(opts):
+        scores["Linux"] += 18
+    if "42" in opts:
+        scores["Linux"] += 12
+    if {"12", "51", "58", "59"}.issubset(opts):
+        scores["Linux"] += 8
+
+    # IoT: PRL courte/générique, sans marqueurs forts mobile/desktop
+    if len(opts) <= 3:
+        scores["IoT / Embedded"] += 26
+    if len(opts) <= 5 and not (has_android_core or has_ios_core or has_windows_core):
+        scores["IoT / Embedded"] += 16
+    if opts.issubset({"1", "3", "6", "15", "51", "54"}):
+        scores["IoT / Embedded"] += 12
+
+    # ───────────────── DHCP host/vclass hints ─────────────────
+    hint_text = f"{hostname} {vendor_class}"
+    if any(x in hint_text for x in ("iphone", "ipad", "ios")):
+        scores["iOS"] += 55
+    if "android" in hint_text:
+        scores["Android"] += 45
+    if any(x in hint_text for x in ("windows", "msft", "microsoft")):
+        scores["Windows"] += 45
+    if any(x in hint_text for x in ("ubuntu", "debian", "fedora", "centos", "linux")):
+        scores["Linux"] += 35
+
+    # ───────────────── TTL (style Zeek/p0f simplifié) ─────────────────
+    # Windows: souvent 128 ; Linux/Android/iOS: souvent 64 ; équipements réseau/IoT: parfois 255
+    if ttl is not None:
+        try:
+            t = int(ttl)
+            if t == 128:
+                scores["Windows"] += 24
+                scores["Linux"] -= 8
+                scores["Android"] -= 8
+                scores["iOS"] -= 6
+            elif t in (60, 64):
+                scores["Linux"] += 12
+                scores["Android"] += 14
+                scores["iOS"] += 16
+                scores["Windows"] -= 10
+                scores["IoT / Embedded"] -= 8
+            elif t == 255:
+                scores["IoT / Embedded"] += 20
+                scores["Windows"] -= 8
+            elif t == 32:
+                scores["IoT / Embedded"] += 10
+        except (TypeError, ValueError):
+            pass
+
+    # ───────────────── Conflits entre signatures ─────────────────
+    if {"26", "28"}.issubset(opts):
+        scores["iOS"] -= 12
+        scores["Windows"] -= 6
+    if {"95", "119", "252"}.issubset(opts):
+        scores["Android"] -= 8
+    if "249" in opts:
+        scores["Android"] -= 10
+        scores["iOS"] -= 8
+    if has_ios_core:
+        scores["IoT / Embedded"] -= 18
+    if has_windows_core:
+        scores["IoT / Embedded"] -= 14
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_os, best_score = ranked[0]
+    second_score = ranked[1][1]
+    gap = max(0, best_score - second_score)
+
+    # Si tout est trop faible / ambigu, éviter un faux positif fort.
+    if best_score < 34:
+        return "Unknown", 35
+
+    # Confiance finale: priorité au meilleur score + séparation avec le second
+    confidence = min(98, max(45, best_score + min(20, gap * 2)))
+    return best_os, int(confidence)
+
+
+
+
+
+
+
+
 
 if __name__ == '__main__':
     print("=" * 60)

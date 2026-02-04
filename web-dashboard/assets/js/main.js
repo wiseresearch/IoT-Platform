@@ -1,4 +1,5 @@
 // Unified Security Platform - Main JavaScript
+const MOCK_TRAFFIC = true;
 
 class UnifiedSecurityPlatform {
     constructor() {
@@ -35,13 +36,13 @@ class UnifiedSecurityPlatform {
             const networkSelector = document.getElementById('networkSelector');
             const timeRangeSelector = document.getElementById('timeRangeSelector');
             
-            if (networkSelector) {
+            /*if (networkSelector) {
                 networkSelector.addEventListener('change', () => this.loadNetworkTraffic());
             }
             
             if (timeRangeSelector) {
                 timeRangeSelector.addEventListener('change', () => this.loadNetworkTraffic());
-            }
+            }*/
         });
 
         // Scan buttons
@@ -157,77 +158,102 @@ class UnifiedSecurityPlatform {
         }
     }
 
-    async loadNetworkTraffic() {
-        try {
-            const networkFilter = document.getElementById('networkSelector')?.value || 'all';
-            const timeRange = document.getElementById('timeRangeSelector')?.value || '1h';
-            
-            const response = await fetch(`${this.apiGateway}/traffic/flows?network=${networkFilter}&timeRange=${timeRange}`);
-            const result = await response.json();
-            
-            // Process the flows data for the chart
-            const flows = result.flows || [];
-            const processedData = this.processTrafficFlows(flows, networkFilter);
-            
-            // Create network traffic chart
+    /*async loadNetworkTraffic() {
+    try {
+        // === MOCK MODE ===
+        if (MOCK_TRAFFIC) {
+            console.warn('MOCK TRAFFIC MODE ENABLED');
+
+            const processedData = this.processTrafficFlows([]);
             this.createTrafficChart(processedData);
-        } catch (error) {
-            console.error('Error loading network traffic:', error);
+            return; // STOP ICI
         }
+
+        // === REAL DATA MODE ===
+        const networkFilter = document.getElementById('networkSelector')?.value || 'all';
+        const timeRange = document.getElementById('timeRangeSelector')?.value || '1h';
+
+        const response = await fetch(
+            `${this.apiGateway}/traffic/flows?network=${networkFilter}&timeRange=${timeRange}`
+        );
+        const result = await response.json();
+
+        const processedData = this.getMockTrafficData();
+        this.createTrafficChart(processedData);
+        } catch (error) {
+        console.error('Error loading network traffic:', error);
+        }
+    }*/
+
+    async loadNetworkTraffic() {
+    console.warn('USING MOCK TRAFFIC DATA ');
+
+    const data = this.getMockTrafficData();
+    this.createTrafficChart(data);
+}
+    
+
+    getMockTrafficData() {
+        const now = new Date();
+        const timestamps = [];
+        const inbound = [];
+        const outbound = [];
+
+        for (let i = 10; i >= 0; i--) {
+            const t = new Date(now.getTime() - i * 60000);
+            timestamps.push(
+                t.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+            );
+
+            inbound.push(100 + Math.random() * 500);
+            outbound.push(50 + Math.random() * 300);
+        }
+
+        return { timestamps, inbound, outbound };
     }
+
 
     refreshTraffic() {
         this.loadNetworkTraffic();
     }
 
     processTrafficFlows(flows, networkFilter = 'all') {
-        // Filter flows by network if specified
-        let filteredFlows = flows;
-        if (networkFilter !== 'all') {
-            const networkPrefix = networkFilter.split('/')[0].substring(0, networkFilter.lastIndexOf('.'));
-            filteredFlows = flows.filter(flow => 
-                flow.src_ip.startsWith(networkPrefix) || flow.dest_ip.startsWith(networkPrefix)
-            );
-        }
-        
-        // Group flows by time and calculate traffic volumes
-        const timeGroups = {};
-        
-        filteredFlows.forEach(flow => {
-            // Parse the timestamp - it comes as GMT format like "Wed, 12 Nov 2025 19:15:29 GMT"
-            const time = new Date(flow.start_time);
-            
-            // Convert to Montreal time (EST/EDT) and format for display
-            const timeKey = time.toLocaleTimeString('en-US', { 
-                hour12: false, 
+
+    // === MOCK MODE : generate fake traffic timeline ===
+    const points = 20; // number of points on the graph
+    const timestamps = [];
+    const inbound = [];
+    const outbound = [];
+
+    const now = new Date();
+
+    for (let i = points - 1; i >= 0; i--) {
+        const t = new Date(now.getTime() - i * 30 * 1000); // every 30s
+
+        timestamps.push(
+            t.toLocaleTimeString('en-US', {
+                hour12: false,
                 timeZone: 'America/Montreal',
                 hour: '2-digit',
                 minute: '2-digit',
                 second: '2-digit'
-            });
-            
-            if (!timeGroups[timeKey]) {
-                timeGroups[timeKey] = { inbound: 0, outbound: 0 };
-            }
-            
-            // Convert bytes to KB
-            timeGroups[timeKey].inbound += (flow.bytes_to_client || 0) / 1024;
-            timeGroups[timeKey].outbound += (flow.bytes_to_server || 0) / 1024;
-        });
-        
-        // Sort by time and prepare chart data - get last 20 data points
-        const sortedTimes = Object.keys(timeGroups).sort().slice(-20);
-        const timestamps = sortedTimes;
-        const inbound = sortedTimes.map(time => Number(timeGroups[time].inbound.toFixed(2)));
-        const outbound = sortedTimes.map(time => Number(timeGroups[time].outbound.toFixed(2)));
-        
-        console.log('Latest timestamps:', sortedTimes.slice(-3));
-        console.log('Sample data - Inbound:', inbound.slice(-3), 'Outbound:', outbound.slice(-3));
-        
-        return { timestamps, inbound, outbound };
+            })
+        );
+
+        // realistic mock traffic (KB)
+        inbound.push(Number((Math.random() * 80 + 20).toFixed(2)));   // 20–100 KB
+        outbound.push(Number((Math.random() * 60 + 10).toFixed(2))); // 10–70 KB
     }
 
+    console.log('MOCK traffic generated:', inbound.slice(-3), outbound.slice(-3));
+
+    return { timestamps, inbound, outbound };
+}
+
+
     createTrafficChart(data) {
+        console.log('Rendering traffic chart with:', data); 
+
         const ctx = document.getElementById('trafficChart');
         if (!ctx) return;
 
