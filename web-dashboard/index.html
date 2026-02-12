@@ -33,6 +33,27 @@
             text-align: center;
             padding: 1.5rem;
         }
+
+        .metric-card .metric-label,
+        .metric-card .metric-number {
+            color: #ffffff;
+        }
+
+        body[data-theme="light"] .metric-card {
+            color: #ffffff;
+        }
+
+        body[data-theme="light"] .metric-card.bg-warning,
+        body[data-theme="light"] .metric-card.bg-info {
+            color: #1f2937;
+        }
+
+        body[data-theme="light"] .metric-card.bg-warning .metric-label,
+        body[data-theme="light"] .metric-card.bg-warning .metric-number,
+        body[data-theme="light"] .metric-card.bg-info .metric-label,
+        body[data-theme="light"] .metric-card.bg-info .metric-number {
+            color: #1f2937;
+        }
         
         .metric-number {
             font-size: 2.5rem;
@@ -90,6 +111,58 @@
             color: #6c757d;
             font-size: 0.75rem;
         }
+
+        body[data-theme="dark"] {
+            background-color: #0f1115;
+            color: #e9ecef;
+        }
+        body[data-theme="dark"] .navbar {
+            background-color: #111827 !important;
+        }
+        body[data-theme="dark"] .card {
+            background-color: #161a22;
+            color: #e9ecef;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+        }
+        body[data-theme="dark"] .metric-card {
+            background: linear-gradient(135deg, #1f2937, #111827);
+            border: 1px solid #2a3140;
+        }
+        body[data-theme="dark"] .metric-card.bg-primary,
+        body[data-theme="dark"] .metric-card.bg-danger,
+        body[data-theme="dark"] .metric-card.bg-warning,
+        body[data-theme="dark"] .metric-card.bg-info {
+            background: linear-gradient(135deg, #1f2937, #111827) !important;
+        }
+        body[data-theme="dark"] .metric-card .metric-label,
+        body[data-theme="dark"] .metric-card .metric-number {
+            color: #e5e7eb;
+        }
+        body[data-theme="dark"] .card-header {
+            background-color: #121622;
+            border-bottom-color: #2a3140;
+        }
+        body[data-theme="dark"] .table {
+            color: #e9ecef;
+        }
+        body[data-theme="dark"] .table-striped > tbody > tr:nth-of-type(odd) > * {
+            color: #e9ecef;
+        }
+        body[data-theme="dark"] .event-stream {
+            background-color: #121622;
+        }
+
+        body[data-theme="dark"] .p-3.border.rounded.bg-light {
+            background-color: #1b202a !important;
+            border-color: #2a3140 !important;
+            color: #e5e7eb;
+        }
+        body[data-theme="dark"] .p-3.border.rounded.bg-light .text-muted {
+            color: #9aa4b2 !important;
+        }
+        body[data-theme="dark"] .text-muted {
+            color: #9aa4b2 !important;
+        }
     </style>
 </head>
 <body>
@@ -140,6 +213,11 @@
                 </ul>
                 
                 <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <button class="btn btn-sm btn-outline-light me-2" id="theme-toggle" onclick="toggleTheme()">
+                            <i class="fas fa-moon me-1"></i><span id="theme-toggle-label">Dark</span>
+                        </button>
+                    </li>
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="fas fa-user me-1"></i> Admin
@@ -266,19 +344,53 @@
         <div id="devices-view" style="display: none;">
             <div class="card">
                 <div class="card-header">
-                    <h5 class="card-title mb-0">
-                        <i class="fas fa-network-wired me-2"></i>
-                        Discovered Devices
-                    </h5>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="fas fa-network-wired me-2"></i>
+                            Connected Devices
+                        </h5>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="refreshDevices()">
+                                <i class="fas fa-sync-alt me-1"></i>Refresh
+                            </button>
+                            <button class="btn btn-sm btn-outline-primary" onclick="restartCaptureAndRefresh()">
+                                <i class="fas fa-redo me-1"></i>Restart Capture
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <div class="p-3 border rounded bg-light">
+                                <div class="text-muted small">Online Devices</div>
+                                <div class="h4 mb-0" id="devices-online-count">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-3 border rounded bg-light">
+                                <div class="text-muted small">With OS Identified</div>
+                                <div class="h4 mb-0" id="devices-os-count">0</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="p-3 border rounded bg-light">
+                                <div class="text-muted small">With MAC Address</div>
+                                <div class="h4 mb-0" id="devices-mac-count">0</div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="table-responsive">
                         <table class="table table-striped" id="devices-table">
                             <thead>
                                 <tr>
                                     <th>IP Address</th>
+                                    <th>MAC Address</th>
                                     <th>Hostname</th>
+                                    <th>Vendor</th>
                                     <th>OS</th>
+                                    <th>OS Version</th>
+                                    <th>Device Type</th>
                                     <th>Status</th>
                                     <th>Risk Level</th>
                                     <th>Vulnerabilities</th>
@@ -287,7 +399,39 @@
                             </thead>
                             <tbody>
                                 <tr>
-                                    <td colspan="7" class="text-center">Loading devices...</td>
+                                    <td colspan="11" class="text-center">Loading devices...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="card mt-4" id="dhcp-fingerprints-card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-fingerprint me-2"></i>
+                        DHCP Fingerprints (No IP Available)
+                    </h5>
+                    <small class="text-muted">Shown only when a device has no IP info</small>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped" id="dhcp-devices-table">
+                            <thead>
+                                <tr>
+                                    <th>IP Address</th>
+                                    <th>MAC Address</th>
+                                    <th>Hostname</th>
+                                    <th>Vendor</th>
+                                    <th>OS</th>
+                                    <th>Confidence</th>
+                                    <th>Status</th>
+                                    <th>Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td colspan="8" class="text-center">Loading DHCP devices...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -309,69 +453,53 @@
                     </button>
                 </div>
                 <div class="card-body">
+                    <div class="alert alert-info py-2 mb-3">
+                        Passive OS-level CVE correlation only. Results are not confirmation of exploitation.
+                    </div>
                     <div class="row mb-3">
                         <div class="col-md-3">
                             <div class="text-center">
-                                <div class="text-danger" style="font-size: 2rem; font-weight: bold;">24</div>
+                                <div class="text-danger" style="font-size: 2rem; font-weight: bold;" id="vuln-critical-count">0</div>
                                 <div class="text-muted">Critical</div>
                             </div>
                         </div>
                         <div class="col-md-3">
                             <div class="text-center">
-                                <div class="text-warning" style="font-size: 2rem; font-weight: bold;">67</div>
+                                <div class="text-warning" style="font-size: 2rem; font-weight: bold;" id="vuln-high-count">0</div>
                                 <div class="text-muted">High</div>
                             </div>
                         </div>
                         <div class="col-md-3">
                             <div class="text-center">
-                                <div class="text-info" style="font-size: 2rem; font-weight: bold;">123</div>
+                                <div class="text-info" style="font-size: 2rem; font-weight: bold;" id="vuln-medium-count">0</div>
                                 <div class="text-muted">Medium</div>
                             </div>
                         </div>
                         <div class="col-md-3">
                             <div class="text-center">
-                                <div class="text-secondary" style="font-size: 2rem; font-weight: bold;">89</div>
+                                <div class="text-secondary" style="font-size: 2rem; font-weight: bold;" id="vuln-low-count">0</div>
                                 <div class="text-muted">Low</div>
                             </div>
                         </div>
                     </div>
                     <div class="table-responsive">
-                        <table class="table table-striped">
+                        <table class="table table-striped" id="vulnerabilities-table">
                             <thead>
                                 <tr>
-                                    <th>CVE ID</th>
-                                    <th>Description</th>
                                     <th>Affected Device</th>
-                                    <th>Severity</th>
-                                    <th>CVSS Score</th>
-                                    <th>Status</th>
-                                    <th>Actions</th>
+                                    <th>Detected OS</th>
+                                    <th>Eligible</th>
+                                    <th>Critical</th>
+                                    <th>High</th>
+                                    <th>Medium</th>
+                                    <th>Low</th>
+                                    <th>Last Checked</th>
+                                    <th>Correlation</th>
                                 </tr>
                             </thead>
                             <tbody id="vulnerabilities-table-body">
                                 <tr>
-                                    <td>CVE-2023-1234</td>
-                                    <td>Remote Code Execution in SSH Service</td>
-                                    <td>192.168.1.10</td>
-                                    <td><span class="badge bg-danger">Critical</span></td>
-                                    <td>9.8</td>
-                                    <td><span class="badge bg-warning">Open</span></td>
-                                    <td>
-                                        <button class="btn btn-sm btn-outline-primary">Details</button>
-                                        <button class="btn btn-sm btn-outline-success">Fix</button>
-                                    </td>
-                                </tr>
-                                <tr>
-                                    <td>CVE-2023-5678</td>
-                                    <td>SQL Injection in Web Interface</td>
-                                    <td>192.168.1.20</td>
-                                    <td><span class="badge bg-warning">High</span></td>
-                                    <td>7.5</td>
-                                    <td><span class="badge bg-warning">Open</span></td>
-                                    <td>
-                                        <button class="btn btn-sm btn-outline-primary">Details</button>
-                                        <button class="btn btn-sm btn-outline-success">Fix</button>
-                                    </td>
+                                    <td colspan="9" class="text-center">Loading vulnerabilities...</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -394,9 +522,9 @@
                                 <div class="d-flex gap-2">
                                     <select id="networkSelector" class="form-select form-select-sm" style="width: 150px;">
                                         <option value="all">All Networks</option>
-                                        <option value="172.20.10.0/24">172.20.10.0/24</option>
-                                        <option value="192.168.1.0/24">192.168.1.0/24</option>
                                         <option value="10.0.0.0/24">10.0.0.0/24</option>
+                                        <option value="192.168.1.0/24">192.168.1.0/24</option>
+                                        <option value="172.20.10.0/24">172.20.10.0/24</option>
                                     </select>
                                     <select id="timeRangeSelector" class="form-select form-select-sm" style="width: 120px;">
                                         <option value="1h">Last Hour</option>
@@ -535,17 +663,9 @@
                                             <th>Actions</th>
                                         </tr>
                                     </thead>
-                                    <tbody>
+                                    <tbody id="traffic-alerts-body">
                                         <tr>
-                                            <td>15:42:33</td>
-                                            <td>192.168.1.100</td>
-                                            <td>10.0.0.50</td>
-                                            <td>TCP</td>
-                                            <td>Port Scan Detected</td>
-                                            <td><span class="badge bg-warning">High</span></td>
-                                            <td>
-                                                <button class="btn btn-sm btn-outline-primary">Block IP</button>
-                                            </td>
+                                            <td colspan="7" class="text-center text-muted">No alerts</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -662,10 +782,10 @@
                                     <div class="mb-3">
                                         <label for="networkRange" class="form-label">Network Range:</label>
                                         <select id="networkRange" class="form-select mb-2">
-                                            <option value="172.20.10.0/24" selected>172.20.10.0/24 (Your Network)</option>
+                                            <option value="10.0.0.0/24" selected>10.0.0.0/24 (Your Wi-Fi)</option>
                                             <option value="192.168.1.0/24">192.168.1.0/24 (Common Home Network)</option>
                                             <option value="192.168.0.0/24">192.168.0.0/24 (Alternative Home Network)</option>
-                                            <option value="10.0.0.0/24">10.0.0.0/24 (Corporate Network)</option>
+                                            <option value="172.20.10.0/24">172.20.10.0/24 (Docker/Virtual Network)</option>
                                             <option value="custom">Custom Range...</option>
                                         </select>
                                         <input type="text" id="customNetworkRange" class="form-control" placeholder="e.g., 192.168.1.0/24" style="display: none;">
@@ -777,10 +897,18 @@
         let dashboardData = {};
         let eventSource = null;
         let charts = {};
+
+        // Device presence tuning (10-15s offline delay)
+        const ONLINE_THRESHOLD_MS = 120 * 1000;
+        const IDLE_THRESHOLD_MS = 5 * 60 * 1000;
+        const ARP_STALE_HOLD_MS = 120 * 1000;
+        const OFFLINE_GRACE_MS = 15 * 1000;
+        const ONLINE_SIGNAL_WINDOW_MS = OFFLINE_GRACE_MS;
+        const REACHABILITY_FRESH_MS = 30 * 1000;
         
         // API Configuration - Determine which port we're on
         const currentPort = window.location.port;
-        const API_BASE = currentPort === '8090' ? 'http://localhost:5001' : 'http://localhost:5001';
+        const API_BASE = 'http://localhost:8080/api';
         
         // Debug info
         console.log('🔧 Current port:', currentPort);
@@ -805,8 +933,31 @@
             return originalFetch.apply(this, args);
         };
         
+        function applyTheme(theme) {
+            const nextTheme = theme === 'dark' ? 'dark' : 'light';
+            document.body.setAttribute('data-theme', nextTheme);
+            const toggle = document.getElementById('theme-toggle');
+            const label = document.getElementById('theme-toggle-label');
+            if (toggle) {
+                toggle.classList.remove('btn-outline-light', 'btn-outline-dark');
+                toggle.classList.add(nextTheme === 'dark' ? 'btn-outline-light' : 'btn-outline-dark');
+            }
+            if (label) {
+                label.textContent = nextTheme === 'dark' ? 'Light' : 'Dark';
+            }
+        }
+
+        function toggleTheme() {
+            const current = document.body.getAttribute('data-theme') || 'light';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('dashboard_theme', next);
+            applyTheme(next);
+        }
+
         // Initialize the application
         document.addEventListener('DOMContentLoaded', function() {
+            const savedTheme = localStorage.getItem('dashboard_theme') || 'light';
+            applyTheme(savedTheme);
             // Ultra aggressive cache clear notification
             const timestamp = new Date().toISOString();
             console.log('Dashboard initialized');
@@ -838,6 +989,10 @@
             
             // Refresh dashboard every 30 seconds
             setInterval(loadDashboardData, 30000);
+
+            // Auto-refresh devices every 5 seconds
+            loadDevices();
+            window.devicesRefreshInterval = setInterval(loadDevices, 5000);
         });
         
         function setupNetworkRangeSelector() {
@@ -1056,6 +1211,7 @@
             document.getElementById('traffic-view').style.display = 'block';
             updateActiveNav('Traffic');
             loadTrafficData();
+            loadTrafficAlerts();
             
             // Start auto-refresh for traffic data
             if (window.trafficRefreshInterval) {
@@ -1064,6 +1220,7 @@
             window.trafficRefreshInterval = setInterval(() => {
                 if (document.getElementById('traffic-view').style.display === 'block') {
                     loadTrafficData();
+                    loadTrafficAlerts();
                 }
             }, 10000); // Refresh every 10 seconds
         }
@@ -1099,43 +1256,564 @@
             // Update active nav item based on the active parameter
         }
         
+        const deviceCache = new Map();
+        let lastCaptureStartedAt = null;
+        let neighborMacs = new Set();
+        let neighborIps = new Set();
+        let neighborStaleMacs = new Set();
+        let neighborStaleIps = new Set();
+        let enforceRestartGate = false;
+        let reachableIps = new Set();
+        let lastReachabilityCheck = 0;
+        let reachabilityInFlight = false;
+        let lastRenderedDevices = [];
+        let lastRenderedDhcp = [];
+
+        function normalizeMac(mac) {
+            if (!mac) return '';
+            return mac.toLowerCase().replace(/-/g, ':');
+        }
+
+        function getDeviceKey(device) {
+            const normalizedMac = normalizeMac(device.mac_address);
+            if (normalizedMac && normalizedMac !== '-') return `mac:${normalizedMac}`;
+            if (device.ip_address && device.ip_address !== '-') return `ip:${device.ip_address}`;
+            return `temp:${Math.random().toString(36).slice(2)}`;
+        }
+
+        function isNoiseIp(ip, device) {
+            if (!ip || ip === '-') {
+                const hasMac = device && normalizeMac(device.mac_address);
+                const hasHostname = device && device.hostname && device.hostname !== '-';
+                const hasOs = device && device.os_name && device.os_name !== 'Unknown';
+                return !(hasMac || hasHostname || hasOs);
+            }
+            if (ip === '0.0.0.0' || ip === '255.255.255.255') return true;
+            const parts = ip.split('.').map(p => parseInt(p, 10));
+            if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return false;
+            // Link-local 169.254.0.0/16 (noise unless clearly identified)
+            if (parts[0] === 169 && parts[1] === 254) {
+                const mac = device ? normalizeMac(device.mac_address) : '';
+                const macZero = mac === '00:00:00:00:00:00' || mac === '00-00-00-00-00-00';
+                const hasHostname = device && device.hostname && device.hostname !== '-';
+                const hasOs = device && device.os_name && device.os_name !== 'Unknown';
+                if (macZero && !hasHostname && !hasOs) return true;
+            }
+            // Multicast 224.0.0.0/4 and 239.0.0.0/8
+            if (parts[0] >= 224 && parts[0] <= 239) return true;
+            return false;
+        }
+
+        function isMeaningfulValue(value, field) {
+            if (value === null || value === undefined) return false;
+            if (typeof value === 'string') {
+                const trimmed = value.trim();
+                if (trimmed === '' || trimmed === '-' || trimmed === 'Unknown') return false;
+            }
+            if (field === 'os_confidence') {
+                return Number(value) > 0;
+            }
+            return true;
+        }
+
+        function mergeDeviceFields(existing, incoming) {
+            const merged = { ...existing };
+
+            Object.keys(incoming).forEach(field => {
+                const incomingValue = incoming[field];
+                if (field === 'last_seen') {
+                    const existingTs = existing.last_seen ? new Date(existing.last_seen).getTime() : 0;
+                    const incomingTs = incomingValue ? new Date(incomingValue).getTime() : 0;
+                    merged.last_seen = incomingTs > existingTs ? incomingValue : existing.last_seen;
+                    return;
+                }
+                if (field === 'seen_online') {
+                    merged.seen_online = Boolean(existing.seen_online) || Boolean(incomingValue);
+                    return;
+                }
+                if (field === 'device_type') {
+                    const existingType = existing.device_type || '';
+                    if (existingType && existingType !== 'Neighbor' && incomingValue === 'Neighbor') {
+                        return;
+                    }
+                    if (isMeaningfulValue(incomingValue, field)) {
+                        merged.device_type = incomingValue;
+                    }
+                    return;
+                }
+                if (field === 'os_confidence') {
+                    const existingVal = Number(existing.os_confidence || 0);
+                    const incomingVal = Number(incomingValue || 0);
+                    merged.os_confidence = Math.max(existingVal, incomingVal);
+                    return;
+                }
+                if (field === 'mac_address') {
+                    const normalized = normalizeMac(incomingValue);
+                    if (normalized) {
+                        merged.mac_address = normalized;
+                    }
+                    return;
+                }
+                if (isMeaningfulValue(incomingValue, field)) {
+                    merged[field] = incomingValue;
+                }
+            });
+
+            return merged;
+        }
+
+        function mergeDeviceIntoCache(device, source, forceKey) {
+            const normalizedMac = normalizeMac(device.mac_address);
+            const key = forceKey || getDeviceKey(device);
+            const existing = deviceCache.get(key) || {};
+            const merged = mergeDeviceFields(existing, {
+                ...device,
+                mac_address: normalizedMac || device.mac_address,
+                source: source || existing.source || 'unknown'
+            });
+
+            if (!forceKey && key.startsWith('ip:') && merged.mac_address) {
+                const macKey = `mac:${normalizeMac(merged.mac_address)}`;
+                const existingMac = deviceCache.get(macKey) || {};
+                const mergedMac = mergeDeviceFields(existingMac, merged);
+                deviceCache.delete(key);
+                deviceCache.set(macKey, mergedMac);
+                return;
+            }
+
+            deviceCache.set(key, merged);
+        }
+
+        function isUsefulDevice(device) {
+            const hasMac = normalizeMac(device.mac_address) !== '';
+            const hasHostname = device.hostname && device.hostname !== '-';
+            const hasOs = device.os_name && device.os_name !== 'Unknown';
+            const isDhcp = device.device_type === 'DHCP Fingerprint';
+            const ip = device.ip_address || '';
+            const isNeighbor = device.device_type === 'Neighbor' ||
+                (hasMac && neighborMacs.has(normalizeMac(device.mac_address))) ||
+                (ip && neighborIps.has(ip.toLowerCase()));
+            return hasMac || hasHostname || hasOs || isDhcp || isNeighbor;
+        }
+
+        function isInfraGateway(device) {
+            const ip = device.ip_address || '';
+            const parts = ip.split('.').map(p => parseInt(p, 10));
+            if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return false;
+            const isGatewayIp = parts[3] === 1;
+            if (!isGatewayIp) return false;
+            const hasHostname = device.hostname && device.hostname !== '-';
+            const hasOs = device.os_name && device.os_name !== 'Unknown';
+            const hasVendor = device.vendor && device.vendor !== '-';
+            const isDhcp = device.device_type === 'DHCP Fingerprint';
+            return !hasHostname && !hasOs && !hasVendor && !isDhcp;
+        }
+
         async function loadDevices() {
             try {
-                const response = await fetch(`${API_BASE}/devices`);
-                if (response.ok) {
-                    const data = await response.json();
-                    updateDevicesTable(data.devices || []);
-                } else {
-                    updateDevicesTable([]);
+                const [apiResponse, dhcpResponse, neighborsResponse] = await Promise.all([
+                    fetch(`${API_BASE}/devices`),
+                    fetch(`${API_BASE}/dhcp/devices?max_age_seconds=3600`).catch(() => null),
+                    fetch(`${API_BASE}/neighbors`).catch(() => null)
+                ]);
+
+                const apiDevices = apiResponse && apiResponse.ok
+                    ? ((await apiResponse.json()).devices || [])
+                    : [];
+
+                const dhcpPayload = dhcpResponse && dhcpResponse.ok
+                    ? (await dhcpResponse.json())
+                    : { devices: [] };
+
+                const neighborsPayload = neighborsResponse && neighborsResponse.ok
+                    ? (await neighborsResponse.json())
+                    : { neighbors: [] };
+                const neighborList = neighborsPayload.neighbors || [];
+                const activeNeighborStates = new Set(['reachable', 'permanent']);
+                const staleNeighborStates = new Set(['stale', 'delay', 'probe']);
+                const isActiveNeighborState = (state) => {
+                    if (!state) return false;
+                    return activeNeighborStates.has(String(state).toLowerCase());
+                };
+                const isStaleNeighborState = (state) => {
+                    if (!state) return false;
+                    return staleNeighborStates.has(String(state).toLowerCase());
+                };
+                const isNoiseNeighbor = (ip, mac) => {
+                    if (!ip) return true;
+                    const parts = ip.split('.').map(p => parseInt(p, 10));
+                    if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return true;
+                    if (parts[0] >= 224 && parts[0] <= 239) return true; // multicast
+                    if (ip === '0.0.0.0' || ip === '255.255.255.255') return true;
+                    if (parts[0] === 169 && parts[1] === 254) return true; // link-local
+                    if (parts[3] === 255) return true;
+                    const normalizedMac = (mac || '').toLowerCase();
+                    if (normalizedMac === '00:00:00:00:00:00' || normalizedMac === '00-00-00-00-00-00') return true;
+                    return false;
+                };
+                neighborMacs = new Set(
+                    neighborList
+                        .filter(n => !isNoiseNeighbor(n.ip || '', n.mac || '') && isActiveNeighborState(n.state))
+                        .map(n => normalizeMac(n.mac || ''))
+                        .filter(Boolean)
+                );
+                neighborIps = new Set(
+                    neighborList
+                        .filter(n => isActiveNeighborState(n.state))
+                        .map(n => (n.ip || '').toLowerCase())
+                        .filter(ip => !isNoiseNeighbor(ip, ''))
+                        .filter(Boolean)
+                );
+                neighborStaleMacs = new Set(
+                    neighborList
+                        .filter(n => !isNoiseNeighbor(n.ip || '', n.mac || '') && isStaleNeighborState(n.state))
+                        .map(n => normalizeMac(n.mac || ''))
+                        .filter(Boolean)
+                );
+                neighborStaleIps = new Set(
+                    neighborList
+                        .filter(n => isStaleNeighborState(n.state))
+                        .map(n => (n.ip || '').toLowerCase())
+                        .filter(ip => !isNoiseNeighbor(ip, ''))
+                        .filter(Boolean)
+                );
+
+                const dhcpDevices = dhcpPayload.devices || [];
+                const captureStartedAt = dhcpPayload.capture_started_at || null;
+                const captureStartedEpoch = captureStartedAt ? new Date(captureStartedAt).getTime() : null;
+
+                if (captureStartedAt && captureStartedAt !== lastCaptureStartedAt) {
+                    deviceCache.clear();
+                    lastCaptureStartedAt = captureStartedAt;
                 }
+
+                const dhcpOnly = [];
+
+                const isInfraIp = (ip, device) => {
+                    if (!ip || ip === '-') return false;
+                    const parts = ip.split('.');
+                    if (parts.length !== 4) return false;
+                    const last = parseInt(parts[3], 10);
+                    if (last === 0 || last === 255) return true;
+                    if (last === 1 && (!device.mac_address || device.mac_address === '-')) return true;
+                    return false;
+                };
+
+                dhcpDevices.forEach(dhcp => {
+                    const dhcpIp = dhcp.ip_address || '-';
+                    const dhcpLastSeen = dhcp.last_seen ? new Date(dhcp.last_seen).getTime() : null;
+
+                    if (captureStartedEpoch && (!dhcpLastSeen || dhcpLastSeen < captureStartedEpoch)) {
+                        return;
+                    }
+
+                    const dhcpSeenOnline = dhcpLastSeen && (Date.now() - dhcpLastSeen) <= ONLINE_THRESHOLD_MS;
+                    const dhcpEntry = {
+                        ip_address: dhcpIp,
+                        mac_address: dhcp.mac_address || '-',
+                        hostname: dhcp.hostname || '-',
+                        vendor: dhcp.vendor_class || '-',
+                        os_name: dhcp.os || 'Unknown',
+                        os_confidence: dhcp.os_confidence ?? '-',
+                        os_version: dhcp.os_version || 'unknown',
+                        device_type: 'DHCP Fingerprint',
+                        status: 'online',
+                        risk_level: 'low',
+                        vulnerability_count: 0,
+                        last_seen: dhcp.last_seen || null,
+                        seen_online: !!dhcpSeenOnline
+                    };
+
+                    if (dhcpIp && dhcpIp !== '-' && !isInfraIp(dhcpIp, dhcpEntry) && !isNoiseIp(dhcpIp, dhcpEntry)) {
+                        mergeDeviceIntoCache(dhcpEntry, 'dhcp');
+                    } else {
+                        mergeDeviceIntoCache(dhcpEntry, 'dhcp');
+                        const normalizedMac = normalizeMac(dhcpEntry.mac_address);
+                        const macKey = normalizedMac ? `mac:${normalizedMac}` : null;
+                        const ipKey = dhcpIp && dhcpIp !== '-' ? `ip:${dhcpIp}` : null;
+                        const cached = (macKey && deviceCache.get(macKey)) || (ipKey && deviceCache.get(ipKey)) || null;
+                        if (cached) {
+                            if (cached.seen_online) dhcpEntry.seen_online = true;
+                            if (cached.last_online_at) dhcpEntry.last_online_at = cached.last_online_at;
+                        }
+                        dhcpOnly.push(dhcpEntry);
+                    }
+                });
+
+                const freshDhcpCount = dhcpDevices.filter(d => {
+                    if (!captureStartedEpoch) return true;
+                    const ts = d.last_seen ? new Date(d.last_seen).getTime() : null;
+                    return ts && ts >= captureStartedEpoch;
+                }).length;
+
+                if (enforceRestartGate && captureStartedEpoch && freshDhcpCount === 0) {
+                    deviceCache.clear();
+                    updateDevicesTable([], []);
+                    updateDhcpTable([]);
+                    return;
+                }
+                if (enforceRestartGate && freshDhcpCount > 0) {
+                    enforceRestartGate = false;
+                }
+
+                apiDevices.forEach(device => {
+                    if (isInfraIp(device.ip_address, device) || isNoiseIp(device.ip_address, device)) {
+                        return;
+                    }
+                    const normalizedMac = normalizeMac(device.mac_address);
+                    let targetKey = null;
+                    if (normalizedMac) {
+                        const macKey = `mac:${normalizedMac}`;
+                        if (deviceCache.has(macKey)) targetKey = macKey;
+                    }
+                    if (!targetKey && device.ip_address) {
+                        const ipKey = `ip:${device.ip_address}`;
+                        if (deviceCache.has(ipKey)) targetKey = ipKey;
+                    }
+                    if (targetKey) {
+                        mergeDeviceIntoCache(device, 'scanner', targetKey);
+                        return;
+                    }
+
+                    if (normalizedMac || device.ip_address) {
+                        mergeDeviceIntoCache(device, 'scanner');
+                    }
+                });
+
+                const now = Date.now();
+                const nowIso = new Date(now).toISOString();
+                deviceCache.forEach((entry, key) => {
+                    const mac = normalizeMac(entry.mac_address);
+                    const ip = (entry.ip_address || '').toLowerCase();
+                    const lastSeen = entry.last_seen ? new Date(entry.last_seen).getTime() : 0;
+                    const hasRecentSeen = lastSeen && (now - lastSeen) <= ONLINE_THRESHOLD_MS;
+                    const hasRecentDhcp = lastSeen && (now - lastSeen) <= ONLINE_THRESHOLD_MS;
+                    const hasNeighborActive = (mac && neighborMacs.has(mac)) || (ip && neighborIps.has(ip));
+                    const hasNeighborStale = (mac && neighborStaleMacs.has(mac)) || (ip && neighborStaleIps.has(ip));
+                    const isHost = ip === '10.0.0.143';
+                    const reachabilityFresh = (now - lastReachabilityCheck) <= REACHABILITY_FRESH_MS;
+                    const hasReachability = reachabilityFresh && ip && reachableIps.has(ip);
+                    const lastOnlineMs = entry.last_online_at ? new Date(entry.last_online_at).getTime() : 0;
+                    const allowStale = hasNeighborStale && (
+                        (lastOnlineMs && (now - lastOnlineMs) <= ARP_STALE_HOLD_MS) ||
+                        hasRecentSeen
+                    );
+                    if (hasReachability || hasRecentDhcp || hasNeighborActive || allowStale || (reachabilityFresh && isHost)) {
+                        deviceCache.set(key, { ...entry, last_online_at: nowIso, seen_online: true });
+                    }
+                });
+
+                if (!enforceRestartGate && deviceCache.size === 0 && neighborList.length > 0) {
+                    neighborList
+                        .filter(n => !isNoiseNeighbor(n.ip || '', n.mac || '') && isActiveNeighborState(n.state))
+                        .forEach(neighbor => {
+                            const ip = neighbor.ip || '-';
+                            if (isInfraIp(ip, neighbor) || isNoiseIp(ip, neighbor)) return;
+                            const macLower = normalizeMac(neighbor.mac || '');
+                            if (macLower.startsWith('00-15-5d') || macLower.startsWith('00:15:5d')) return; // Hyper-V
+                            const entry = {
+                                ip_address: ip,
+                                mac_address: macLower || '-',
+                                hostname: '-',
+                                vendor: '-',
+                                os_name: 'Unknown',
+                                os_version: 'unknown',
+                                device_type: 'IoT Device (ARP)',
+                                status: 'online',
+                                risk_level: 'low',
+                                vulnerability_count: 0,
+                                last_seen: nowIso
+                            };
+                            mergeDeviceIntoCache(entry, 'neighbor');
+                        });
+                }
+
+                const cachedDevices = Array.from(deviceCache.values())
+                    .filter(d => !isNoiseIp(d.ip_address, d))
+                    .filter(d => !isInfraGateway(d))
+                    .filter(isUsefulDevice);
+                const visibleDevices = cachedDevices.filter(d => {
+                    if (d.seen_online || d.last_online_at) return true;
+                    if (d.last_seen) {
+                        const ts = new Date(d.last_seen).getTime();
+                        if (ts && (Date.now() - ts) <= ONLINE_THRESHOLD_MS) return true;
+                    }
+                    const mac = normalizeMac(d.mac_address);
+                    const ip = (d.ip_address || '').toLowerCase();
+                    return (mac && neighborStaleMacs.has(mac)) || (ip && neighborStaleIps.has(ip));
+                });
+                const visibleDhcp = dhcpOnly.filter(d => {
+                    if (d.seen_online || d.last_online_at) return true;
+                    if (d.last_seen) {
+                        const ts = new Date(d.last_seen).getTime();
+                        if (ts && (Date.now() - ts) <= ONLINE_THRESHOLD_MS) return true;
+                    }
+                    const mac = normalizeMac(d.mac_address);
+                    const ip = (d.ip_address || '').toLowerCase();
+                    return (mac && neighborStaleMacs.has(mac)) || (ip && neighborStaleIps.has(ip));
+                });
+                lastRenderedDevices = visibleDevices;
+                lastRenderedDhcp = visibleDhcp;
+                updateDevicesTable(visibleDevices, visibleDhcp);
+                updateDhcpTable(visibleDhcp);
+                refreshReachability(cachedDevices);
             } catch (error) {
                 console.error('Error loading devices:', error);
-                updateDevicesTable([]);
+                try {
+                    const dhcpResponse = await fetch(`${API_BASE}/dhcp/devices?max_age_seconds=3600`);
+                    if (dhcpResponse.ok) {
+                        const dhcp = await dhcpResponse.json();
+                        const fallback = (dhcp.devices || []).map(d => ({
+                            ip_address: d.ip_address || '-',
+                            mac_address: d.mac_address || '-',
+                            hostname: d.hostname || '-',
+                            vendor: d.vendor_class || '-',
+                            os_name: d.os || 'Unknown',
+                            os_confidence: d.os_confidence ?? '-',
+                            last_seen: d.last_seen || null
+                        }));
+                        fallback.forEach(d => mergeDeviceIntoCache(d, 'dhcp'));
+                        updateDevicesTable(
+                            Array.from(deviceCache.values())
+                                .filter(d => !isNoiseIp(d.ip_address, d))
+                                .filter(d => !isInfraGateway(d))
+                                .filter(isUsefulDevice),
+                            fallback
+                        );
+                        updateDhcpTable(fallback);
+                        refreshReachability(Array.from(deviceCache.values()));
+                        return;
+                    }
+                } catch (dhcpError) {
+                    console.error('Error loading DHCP devices:', dhcpError);
+                }
+                updateDevicesTable(
+                    Array.from(deviceCache.values())
+                        .filter(d => !isNoiseIp(d.ip_address, d))
+                        .filter(d => !isInfraGateway(d))
+                        .filter(isUsefulDevice),
+                    []
+                );
+                updateDhcpTable([]);
+                refreshReachability(Array.from(deviceCache.values()));
+            }
+        }
+
+        async function refreshReachability(devices) {
+            const now = Date.now();
+            if (reachabilityInFlight || (now - lastReachabilityCheck) < 5000) return;
+            const ips = Array.from(new Set(
+                (devices || [])
+                    .map(d => d.ip_address)
+                    .filter(ip => ip && ip !== '-' && !isNoiseIp(ip))
+            ));
+            if (ips.length === 0) return;
+
+            reachabilityInFlight = true;
+            try {
+                const response = await fetch(`${API_BASE}/reachability`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ips })
+                });
+                if (response.ok) {
+                    const payload = await response.json();
+                    const results = payload.results || {};
+                    reachableIps = new Set(
+                        Object.keys(results).filter(ip => results[ip])
+                    );
+                    lastReachabilityCheck = now;
+                    if (lastRenderedDevices.length || lastRenderedDhcp.length) {
+                        updateDevicesTable(lastRenderedDevices, lastRenderedDhcp);
+                    }
+                }
+            } catch (e) {
+                console.error('Reachability check failed:', e);
+            } finally {
+                reachabilityInFlight = false;
             }
         }
         
-        function updateDevicesTable(devices) {
+        function getDeviceLastSeenMs(device) {
+            const lastOnline = device.last_online_at ? new Date(device.last_online_at).getTime() : 0;
+            const lastSeen = device.last_seen ? new Date(device.last_seen).getTime() : 0;
+            return Math.max(lastOnline, lastSeen);
+        }
+
+        function getDeviceStatus(device) {
+            const mac = normalizeMac(device.mac_address);
+            const ip = (device.ip_address || '').toLowerCase();
+            const hasNeighborActive = (mac && neighborMacs.has(mac)) || (ip && neighborIps.has(ip));
+            const hasNeighborStale = (mac && neighborStaleMacs.has(mac)) || (ip && neighborStaleIps.has(ip));
+            const reachabilityFresh = (Date.now() - lastReachabilityCheck) <= REACHABILITY_FRESH_MS;
+            if (reachabilityFresh && ip && reachableIps.has(ip)) return 'online';
+            if (hasNeighborActive) return 'online';
+
+            const lastSeenMs = getDeviceLastSeenMs(device);
+            if (lastSeenMs) {
+                const age = Date.now() - lastSeenMs;
+                if (age <= ONLINE_THRESHOLD_MS) return 'online';
+                if (age <= IDLE_THRESHOLD_MS) return 'idle';
+            }
+
+            if (hasNeighborStale) return 'stale';
+            return 'offline';
+        }
+
+        function statusToClass(status) {
+            if (status === 'online') return 'online';
+            if (status === 'idle') return 'warning';
+            if (status === 'stale') return 'warning';
+            return 'offline';
+        }
+
+        function updateDevicesTable(devices, dhcpDevices) {
             const tbody = document.querySelector('#devices-table tbody');
+            const onlineCountEl = document.getElementById('devices-online-count');
+            const osCountEl = document.getElementById('devices-os-count');
+            const macCountEl = document.getElementById('devices-mac-count');
+
+            const onlineDevices = devices.filter(d => getDeviceStatus(d) === 'online');
+            const onlineDhcp = dhcpDevices.filter(d => getDeviceStatus(d) === 'online');
+
+            const onlineCount = onlineDevices.length + onlineDhcp.length;
+            const osCount = onlineDevices.filter(d => d.os_name && d.os_name !== 'Unknown').length +
+                onlineDhcp.filter(d => d.os_name && d.os_name !== 'Unknown').length;
+            const macCount = onlineDevices.filter(d => d.mac_address && d.mac_address.trim() !== '').length +
+                onlineDhcp.filter(d => d.mac_address && d.mac_address.trim() !== '').length;
+
+            if (onlineCountEl) onlineCountEl.textContent = onlineCount;
+            if (osCountEl) osCountEl.textContent = osCount;
+            if (macCountEl) macCountEl.textContent = macCount;
             
             if (devices.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center">No devices found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="11" class="text-center">No devices found</td></tr>';
                 return;
             }
             
             let html = '';
             devices.forEach(device => {
+                const derivedStatus = getDeviceStatus(device);
+                const statusClass = statusToClass(derivedStatus);
+                const rawType = device.device_type || '-';
+                const displayType = rawType.toLowerCase() === 'neighbor' ? 'IoT Device (ARP)' : rawType;
+
                 html += `
                     <tr>
                         <td>${device.ip_address}</td>
+                        <td>${device.mac_address || '-'}</td>
                         <td>${device.hostname || '-'}</td>
+                        <td>${device.vendor || '-'}</td>
                         <td>${device.os_name || 'Unknown'}</td>
+                        <td>${device.os_version || '-'}</td>
+                        <td>${displayType}</td>
                         <td>
-                            <span class="status-indicator status-${device.status}"></span>
-                            ${device.status}
+                            <span class="status-indicator status-${statusClass}"></span>
+                            ${derivedStatus}
                         </td>
                         <td>
                             <span class="badge bg-${getRiskColor(device.risk_level)}">
-                                ${device.risk_level}
+                                ${device.risk_level || 'low'}
                             </span>
                         </td>
                         <td>${device.vulnerability_count || 0}</td>
@@ -1145,6 +1823,65 @@
             });
             
             tbody.innerHTML = html;
+        }
+
+        function updateDhcpTable(devices) {
+            const tbody = document.querySelector('#dhcp-devices-table tbody');
+            const card = document.getElementById('dhcp-fingerprints-card');
+
+            if (!tbody) return;
+
+            if (!devices || devices.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center">No DHCP devices found</td></tr>';
+                if (card) card.style.display = 'none';
+                return;
+            }
+
+            if (card) card.style.display = 'block';
+            let html = '';
+            devices.forEach(device => {
+                const derivedStatus = getDeviceStatus(device);
+                html += `
+                    <tr>
+                        <td>${device.ip_address || '-'}</td>
+                        <td>${device.mac_address || '-'}</td>
+                        <td>${device.hostname || '-'}</td>
+                        <td>${device.vendor || '-'}</td>
+                        <td>${device.os_name || 'Unknown'}</td>
+                        <td>${device.os_confidence ?? '-'}</td>
+                        <td><span class="badge bg-${derivedStatus === 'online' ? 'success' : (derivedStatus === 'idle' ? 'warning' : 'secondary')}">${derivedStatus}</span></td>
+                        <td>${formatTimestamp(device.last_seen)}</td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        async function restartCaptureAndRefresh() {
+            try {
+                const response = await fetch(`${API_BASE}/dhcp/restart`, { method: 'POST' });
+                if (response.ok) {
+                    const payload = await response.json();
+                    if (payload && payload.capture_started_at) {
+                        lastCaptureStartedAt = payload.capture_started_at;
+                    }
+                }
+            } catch (e) {
+                console.error('Restart capture failed:', e);
+            }
+
+            deviceCache.clear();
+            enforceRestartGate = true;
+            reachableIps = new Set();
+            lastReachabilityCheck = 0;
+            updateDevicesTable([], []);
+            updateDhcpTable([]);
+            setTimeout(loadDevices, 1000);
+        }
+
+        function refreshDevices() {
+            loadDevices();
         }
         
         // Utility functions
@@ -1194,12 +1931,54 @@
         let trafficDataCache = null;
         let lastTrafficFetch = 0;
         const CACHE_DURATION = 5000; // 5 seconds
+        let trafficAlerts = [];
+        let lastAlertsFetch = 0;
+        const ALERTS_CACHE_DURATION = 10000; // 10 seconds
         
         // Historical chart data storage (keeps last 30 minutes)
         let chartHistoricalData = {
             buckets: new Map(), // timestamp -> {inbound, outbound, count}
             maxAge: 30 * 60 * 1000 // 30 minutes
         };
+
+        function getNetworkPrefix(networkFilter) {
+            if (!networkFilter || networkFilter === 'all') return '';
+            const base = networkFilter.split('/')[0] || '';
+            const lastDot = base.lastIndexOf('.');
+            if (lastDot <= 0) return base;
+            return base.substring(0, lastDot);
+        }
+
+        function filterByNetwork(items, networkFilter, ipFields) {
+            if (!Array.isArray(items) || items.length === 0) return [];
+            if (!networkFilter || networkFilter === 'all') return items;
+            const prefix = getNetworkPrefix(networkFilter);
+            if (!prefix) return items;
+            return items.filter(item => {
+                return ipFields.some(field => {
+                    const ip = (item[field] || '').toString();
+                    return ip.startsWith(prefix);
+                });
+            });
+        }
+
+        function isPrivateIp(ip) {
+            const parts = (ip || '').split('.').map(p => parseInt(p, 10));
+            if (parts.length !== 4 || parts.some(n => Number.isNaN(n))) return false;
+            if (parts[0] === 10) return true;
+            if (parts[0] === 192 && parts[1] === 168) return true;
+            if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+            return false;
+        }
+
+        function isLocalIp(ip, networkFilter) {
+            if (!ip) return false;
+            if (networkFilter && networkFilter !== 'all') {
+                const prefix = getNetworkPrefix(networkFilter);
+                return prefix ? ip.startsWith(prefix) : false;
+            }
+            return isPrivateIp(ip);
+        }
 
         async function loadTrafficData(forceRefresh = false) {
             const now = Date.now();
@@ -1251,11 +2030,6 @@
                 if (response.ok) {
                     const data = await response.json();
                     
-                    // Limit to 30 most recent flows for faster rendering
-                    if (data.flows && data.flows.length > 30) {
-                        data.flows = data.flows.slice(0, 30);
-                    }
-                    
                     // Cache the data
                     trafficDataCache = data;
                     lastTrafficFetch = now;
@@ -1268,6 +2042,45 @@
             } catch (error) {
                 console.error('Error loading traffic data:', error);
                 updateTrafficUI({ flows: [] });
+            }
+        }
+
+        async function loadTrafficAlerts(forceRefresh = false) {
+            const now = Date.now();
+            if (!forceRefresh && trafficAlerts.length && (now - lastAlertsFetch) < ALERTS_CACHE_DURATION) {
+                updateTrafficAlertsTable(trafficAlerts);
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE}/alerts`, {
+                    cache: 'no-store',
+                    headers: {
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    trafficAlerts = data.alerts || [];
+                    lastAlertsFetch = now;
+                    updateTrafficAlertsTable(trafficAlerts);
+                    if (trafficDataCache) {
+                        updateTrafficStats(trafficDataCache);
+                    }
+                } else {
+                    trafficAlerts = [];
+                    updateTrafficAlertsTable([]);
+                    if (trafficDataCache) {
+                        updateTrafficStats(trafficDataCache);
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading traffic alerts:', error);
+                trafficAlerts = [];
+                updateTrafficAlertsTable([]);
+                if (trafficDataCache) {
+                    updateTrafficStats(trafficDataCache);
+                }
             }
         }
         
@@ -1339,27 +2152,46 @@
 
         // Update table functions
         function updateVulnerabilitiesTable(vulnerabilities) {
-            const tbody = document.querySelector('#vulnerabilities-table tbody');
+            const tbody = document.querySelector('#vulnerabilities-table-body');
+            const criticalEl = document.getElementById('vuln-critical-count');
+            const highEl = document.getElementById('vuln-high-count');
+            const mediumEl = document.getElementById('vuln-medium-count');
+            const lowEl = document.getElementById('vuln-low-count');
+            
+            const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+            vulnerabilities.forEach(v => {
+                if (!v.eligible) return;
+                const summary = v.vulnerability_summary || {};
+                counts.critical += summary.critical || 0;
+                counts.high += summary.high || 0;
+                counts.medium += summary.medium || 0;
+                counts.low += summary.low || 0;
+            });
+            
+            if (criticalEl) criticalEl.textContent = counts.critical;
+            if (highEl) highEl.textContent = counts.high;
+            if (mediumEl) mediumEl.textContent = counts.medium;
+            if (lowEl) lowEl.textContent = counts.low;
             
             if (vulnerabilities.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center">No vulnerabilities found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" class="text-center">No vulnerabilities found</td></tr>';
                 return;
             }
             
             let html = '';
             vulnerabilities.forEach(vuln => {
+                const summary = vuln.vulnerability_summary || {};
                 html += `
                     <tr>
-                        <td>${vuln.cve_id || 'N/A'}</td>
-                        <td>${vuln.title || 'Unknown'}</td>
                         <td>${vuln.affected_device || 'Unknown'}</td>
-                        <td><span class="badge bg-${getSeverityColor(vuln.severity)}">${vuln.severity || 'Unknown'}</span></td>
-                        <td>${vuln.cvss_score || 'N/A'}</td>
-                        <td><span class="badge bg-${vuln.status === 'open' ? 'warning' : 'success'}">${vuln.status || 'Unknown'}</span></td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-primary">Details</button>
-                            <button class="btn btn-sm btn-outline-success">Fix</button>
-                        </td>
+                        <td>${vuln.detected_os || 'Unknown'}</td>
+                        <td><span class="badge bg-${vuln.eligible ? 'success' : 'secondary'}">${vuln.eligible ? 'yes' : 'no'}</span></td>
+                        <td>${summary.critical ?? 0}</td>
+                        <td>${summary.high ?? 0}</td>
+                        <td>${summary.medium ?? 0}</td>
+                        <td>${summary.low ?? 0}</td>
+                        <td>${vuln.last_checked ? new Date(vuln.last_checked).toLocaleString() : '-'}</td>
+                        <td>${vuln.correlation_explanation || 'OS-based correlation'}</td>
                     </tr>
                 `;
             });
@@ -1497,7 +2329,7 @@
                         </div>
                 `;
                 
-                if (scan.error_message) {
+                if (scan.error_message && scan.status !== 'completed') {
                     resultsHtml += `
                         <div class="alert alert-danger">
                             <strong>Error:</strong> ${scan.error_message}
@@ -1609,17 +2441,6 @@
             }
             
             const flows = data.flows || [];
-            if (flows.length > 0 && flows.every(f =>
-                (f.bytes_to_client || 0) === 0 &&
-                (f.bytes_to_server || 0) === 0
-            )) {
-                console.warn('⚠️ USING MOCK TRAFFIC DATA ⚠️');
-
-                flows.forEach(flow => {
-                    flow.bytes_to_client = Math.floor(Math.random() * 50000) + 1000;
-                    flow.bytes_to_server = Math.floor(Math.random() * 50000) + 1000;
-                });
-        }
 
             console.log(`Processing ${flows.length} traffic flows`);
             
@@ -1687,8 +2508,8 @@
             // Sort flows by start_time (most recent first for faster processing)
             const sortedFlows = filteredFlows.sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
             
-            // Group flows into time buckets (every 60 seconds for cleaner chart)
-            const bucketSize = 60000; // 60 seconds in milliseconds
+            // Group flows into time buckets (every 5 seconds)
+            const bucketSize = 5000; // 5 seconds in milliseconds
             const now = Date.now();
             
             // Add current flows to historical data
@@ -1710,16 +2531,9 @@
                 bucket.flows.add(flowId);
                 bucket.count++;
                 
-                // Get actual bytes
-                let inboundBytes = flow.bytes_to_client || 0;
-                let outboundBytes = flow.bytes_to_server || 0;
-                
-                if (inboundBytes === 0 && flow.packets_to_client) {
-                    inboundBytes = flow.packets_to_client * 1024;
-                }
-                if (outboundBytes === 0 && flow.packets_to_server) {
-                    outboundBytes = flow.packets_to_server * 1024;
-                }
+                // Get actual bytes (no estimation)
+                const inboundBytes = flow.bytes_to_client || 0;
+                const outboundBytes = flow.bytes_to_server || 0;
                 
                 bucket.inbound += inboundBytes;
                 bucket.outbound += outboundBytes;
@@ -1733,10 +2547,11 @@
                 }
             }
             
-            // Convert buckets to chart data (show last 30 buckets = 30 minutes)
+            // Convert buckets to chart data (show last N buckets based on maxAge)
+            const maxBuckets = Math.max(1, Math.floor(chartHistoricalData.maxAge / bucketSize));
             const sortedBuckets = Array.from(chartHistoricalData.buckets.entries())
                 .sort((a, b) => a[0] - b[0])
-                .slice(-30);
+                .slice(-maxBuckets);
             
             if (sortedBuckets.length > 0) {
                 const firstTime = new Date(sortedBuckets[0][0]);
@@ -1894,95 +2709,117 @@
             
             console.log('Traffic chart updated successfully');
         }        function updateTrafficStats(data) {
-            console.log('📊 Updating traffic stats...');
             const flows = data.flows || [];
-            console.log('📊 Number of flows:', flows.length);
-            
-            // Calculate statistics
-            const totalFlows = flows.length;
-            
-            // Calculate bytes - if actual bytes are 0, estimate from packets (avg 1KB per packet)
-            const totalBytes = flows.reduce((sum, flow) => {
-                const actualBytes = (flow.bytes_to_server || 0) + (flow.bytes_to_client || 0);
-                if (actualBytes > 0) {
-                    return sum + actualBytes;
-                } else {
-                    // Estimate: 1024 bytes per packet
-                    const packets = (flow.packets_to_server || 0) + (flow.packets_to_client || 0);
-                    return sum + (packets * 1024);
-                }
+            const networkFilter = document.getElementById('networkSelector')?.value || 'all';
+            const filteredFlows = filterByNetwork(flows, networkFilter, ['src_ip', 'dest_ip']);
+
+            const totalBytes = filteredFlows.reduce((sum, flow) => {
+                return sum + (flow.bytes_to_server || 0) + (flow.bytes_to_client || 0);
             }, 0);
             
-            const inboundBytes = flows.reduce((sum, flow) => {
-                const actualBytes = flow.bytes_to_client || 0;
-                if (actualBytes > 0) {
-                    return sum + actualBytes;
-                } else {
-                    return sum + ((flow.packets_to_client || 0) * 1024);
-                }
+            const inboundBytes = filteredFlows.reduce((sum, flow) => {
+                return sum + (flow.bytes_to_client || 0);
             }, 0);
             
-            const outboundBytes = flows.reduce((sum, flow) => {
-                const actualBytes = flow.bytes_to_server || 0;
-                if (actualBytes > 0) {
-                    return sum + actualBytes;
-                } else {
-                    return sum + ((flow.packets_to_server || 0) * 1024);
-                }
+            const outboundBytes = filteredFlows.reduce((sum, flow) => {
+                return sum + (flow.bytes_to_server || 0);
             }, 0);
             
-            const activeFlows = flows.filter(flow => flow.state === 'established' || flow.state === 'ESTABLISHED').length;
-            
-            console.log('📊 Calculated - Total:', totalBytes, 'Inbound:', inboundBytes, 'Outbound:', outboundBytes);
-            console.log('📊 Active flows:', activeFlows, 'Total flows:', totalFlows);
-            
-            // Update DOM elements - look inside trafficStatsContent div
-            const statsContent = document.getElementById('trafficStatsContent');
-            if (!statsContent) {
-                console.error('❌ trafficStatsContent not found');
-                return;
+            const activeFlows = filteredFlows.filter(flow => flow.state === 'established' || flow.state === 'ESTABLISHED').length;
+            let deviceCount = 0;
+            const deviceKeys = new Set();
+            const allDevices = []
+                .concat(Array.isArray(lastRenderedDevices) ? lastRenderedDevices : [])
+                .concat(Array.isArray(lastRenderedDhcp) ? lastRenderedDhcp : []);
+
+            if (allDevices.length > 0) {
+                allDevices.forEach(device => {
+                    if (getDeviceStatus(device) === 'offline') return;
+                    const ip = device.ip_address || '';
+                    const mac = normalizeMac(device.mac_address);
+                    if (networkFilter !== 'all' && ip && !isLocalIp(ip, networkFilter)) return;
+                    const key = mac || ip;
+                    if (key) deviceKeys.add(key);
+                });
+                deviceCount = deviceKeys.size;
+            } else {
+                const uniqueIps = new Set();
+                filteredFlows.forEach(flow => {
+                    if (isLocalIp(flow.src_ip, networkFilter)) uniqueIps.add(flow.src_ip);
+                    if (isLocalIp(flow.dest_ip, networkFilter)) uniqueIps.add(flow.dest_ip);
+                });
+                deviceCount = uniqueIps.size;
             }
+
+            const alertsForNetwork = filterByNetwork(trafficAlerts, networkFilter, ['src_ip', 'dest_ip']);
+            const suspiciousCount = alertsForNetwork.length;
             
-            console.log('✅ trafficStatsContent found');
+            const statsContent = document.getElementById('trafficStatsContent');
+            if (!statsContent) return;
+            
             const statsElements = statsContent.querySelectorAll('.d-flex');
-            console.log('📊 Found', statsElements.length, 'stat elements');
-            
-            statsElements.forEach((statElement, index) => {
+            statsElements.forEach((statElement) => {
                 const textSpan = statElement.querySelector('span');
                 const valueStrong = statElement.querySelector('strong');
                 
-                if (!textSpan || !valueStrong) {
-                    console.log(`  ⚠️ Stat element ${index}: missing span or strong`);
-                    return;
-                }
+                if (!textSpan || !valueStrong) return;
                 
                 const text = textSpan.textContent;
-                console.log(`  📊 Stat ${index}: "${text}" = "${valueStrong.textContent}"`);
-                
                 if (text.includes('Total') && text.includes('Traffic')) {
-                    const newValue = `${(totalBytes / 1024 / 1024).toFixed(2)} MB`;
-                    console.log('  → Setting Total Traffic to:', newValue);
-                    valueStrong.textContent = newValue;
+                    valueStrong.textContent = `${(totalBytes / 1024 / 1024).toFixed(2)} MB`;
                 } else if (text.includes('Inbound')) {
-                    const newValue = `${(inboundBytes / 1024 / 1024).toFixed(2)} MB`;
-                    console.log('  → Setting Inbound to:', newValue);
-                    valueStrong.textContent = newValue;
+                    valueStrong.textContent = `${(inboundBytes / 1024 / 1024).toFixed(2)} MB`;
                 } else if (text.includes('Outbound')) {
-                    const newValue = `${(outboundBytes / 1024 / 1024).toFixed(2)} MB`;
-                    console.log('  → Setting Outbound to:', newValue);
-                    valueStrong.textContent = newValue;
+                    valueStrong.textContent = `${(outboundBytes / 1024 / 1024).toFixed(2)} MB`;
                 } else if (text.includes('Active') && text.includes('Flows')) {
-                    console.log('  → Setting Active Flows to:', activeFlows);
                     valueStrong.textContent = activeFlows.toString();
                 } else if (text.includes('Network') && text.includes('Devices')) {
-                    console.log('  → Setting Network Devices to:', totalFlows);
-                    valueStrong.textContent = totalFlows.toString();
-                } else {
-                    console.log('  → No match for this stat');
+                    valueStrong.textContent = deviceCount.toString();
+                } else if (text.includes('Suspicious')) {
+                    valueStrong.textContent = suspiciousCount.toString();
                 }
             });
-            
-            console.log('✅ Traffic stats updated successfully');
+        }
+
+        function updateTrafficAlertsTable(alerts) {
+            const tbody = document.getElementById('traffic-alerts-body');
+            if (!tbody) return;
+
+            const networkFilter = document.getElementById('networkSelector')?.value || 'all';
+            const filteredAlerts = filterByNetwork(alerts || [], networkFilter, ['src_ip', 'dest_ip']);
+
+            tbody.innerHTML = '';
+
+            if (filteredAlerts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No alerts</td></tr>';
+                return;
+            }
+
+            const displayAlerts = filteredAlerts.slice(0, 10);
+            const fragment = document.createDocumentFragment();
+
+            displayAlerts.forEach(alert => {
+                const row = document.createElement('tr');
+                const severity = (alert.severity || 'low').toLowerCase();
+                const severityClass =
+                    severity === 'critical' ? 'bg-danger' :
+                    severity === 'high' ? 'bg-warning' :
+                    severity === 'medium' ? 'bg-info' :
+                    'bg-secondary';
+
+                row.innerHTML = `
+                    <td>${formatTimestamp(alert.timestamp) || '-'}</td>
+                    <td>${alert.src_ip || '-'}</td>
+                    <td>${alert.dest_ip || '-'}</td>
+                    <td>${alert.protocol || '-'}</td>
+                    <td>${alert.signature || 'Alert'}</td>
+                    <td><span class="badge ${severityClass}">${severity}</span></td>
+                    <td>-</td>
+                `;
+                fragment.appendChild(row);
+            });
+
+            tbody.appendChild(fragment);
         }
 
         function updateTrafficFlowsTable(data) {
@@ -1997,13 +2834,15 @@
             }
             
             const flows = data.flows || [];
-            console.log('🌊 Number of flows to display:', flows.length);
+            const networkFilter = document.getElementById('networkSelector')?.value || 'all';
+            const filteredFlows = filterByNetwork(flows, networkFilter, ['src_ip', 'dest_ip']);
+            console.log('🌊 Number of flows to display:', filteredFlows.length);
             
             // Clear existing rows
             tbody.innerHTML = '';
             
             // Limit to 20 rows for performance - show most recent
-            const displayFlows = flows.slice(0, 20);
+            const displayFlows = filteredFlows.slice(0, 20);
             
             // Add new rows using document fragment for better performance
             const fragment = document.createDocumentFragment();
@@ -2011,13 +2850,8 @@
             displayFlows.forEach(flow => {
                 const row = document.createElement('tr');
                 
-                // Calculate bytes - if actual bytes are 0, estimate from packets (1KB per packet)
-                let totalBytes = (flow.bytes_to_server || 0) + (flow.bytes_to_client || 0);
+                const totalBytes = (flow.bytes_to_server || 0) + (flow.bytes_to_client || 0);
                 const totalPackets = (flow.packets_to_server || 0) + (flow.packets_to_client || 0);
-                
-                if (totalBytes === 0 && totalPackets > 0) {
-                    totalBytes = totalPackets * 1024; // Estimate 1KB per packet
-                }
                 
                 const startTime = flow.start_time ? new Date(flow.start_time) : new Date();
                 const duration = flow.duration_seconds || Math.floor((Date.now() - startTime.getTime()) / 1000);
@@ -2029,7 +2863,7 @@
                     <td><code>${flow.src_ip}:${flow.src_port}</code></td>
                     <td><code>${flow.dest_ip}:${flow.dest_port}</code></td>
                     <td><span class="badge bg-info">${flow.protocol}</span></td>
-                    <td>${formatBytes(totalBytes)}${totalBytes > 0 && (flow.bytes_to_server === 0 && flow.bytes_to_client === 0) ? ' <small class="text-muted">(est.)</small>' : ''}</td>
+                    <td>${formatBytes(totalBytes)}</td>
                     <td>${totalPackets}</td>
                     <td><span class="badge ${stateClass}">${flow.state}</span></td>
                     <td>${formatDuration(duration)}</td>
@@ -2040,12 +2874,12 @@
             
             tbody.appendChild(fragment);
             
-            if (flows.length === 0) {
+            if (filteredFlows.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No active flows</td></tr>';
-            } else if (flows.length > 20) {
+            } else if (filteredFlows.length > 20) {
                 // Add info row showing there are more flows
                 const infoRow = document.createElement('tr');
-                infoRow.innerHTML = `<td colspan="8" class="text-center text-muted"><small>Showing 20 of ${flows.length} flows</small></td>`;
+                infoRow.innerHTML = `<td colspan="8" class="text-center text-muted"><small>Showing 20 of ${filteredFlows.length} flows</small></td>`;
                 tbody.appendChild(infoRow);
             }
         }
@@ -2072,7 +2906,7 @@
 
         async function startNewScan() {
             // Show a modal or prompt for scan configuration
-            const targetRange = prompt('Enter target network range (e.g., 172.20.10.0/28):', '172.20.10.0/28');
+            const targetRange = prompt('Enter target network range (e.g., 10.0.0.0/24):', '10.0.0.0/24');
             if (targetRange) {
                 await startNetworkScanWithTarget(targetRange);
             }
@@ -2195,7 +3029,8 @@ Check console for details.`);
         // Global function for traffic refresh button
         function refreshTraffic() {
             console.log('🔄 Manual traffic refresh triggered');
-            loadTrafficData();
+            loadTrafficData(true);
+            loadTrafficAlerts(true);
         }
         
         // Cleanup on page unload

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS devices (
     vendor VARCHAR(100),
     os_name VARCHAR(100),
     os_version VARCHAR(50),
+    os_confidence INT DEFAULT 0,
+    version_confidence INT DEFAULT 0,
     firmware_version VARCHAR(100),
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -1,5 +1,5 @@
 // Unified Security Platform - Main JavaScript
-const MOCK_TRAFFIC = true;
+const MOCK_TRAFFIC = false;
 
 class UnifiedSecurityPlatform {
     constructor() {
@@ -186,11 +186,29 @@ class UnifiedSecurityPlatform {
     }*/
 
     async loadNetworkTraffic() {
-    console.warn('USING MOCK TRAFFIC DATA ');
+        try {
+            if (MOCK_TRAFFIC) {
+                console.warn('MOCK TRAFFIC MODE ENABLED');
+                const data = this.getMockTrafficData();
+                this.createTrafficChart(data);
+                return;
+            }
 
-    const data = this.getMockTrafficData();
-    this.createTrafficChart(data);
-}
+            const networkFilter = document.getElementById('networkSelector')?.value || 'all';
+            const timeRange = document.getElementById('timeRangeSelector')?.value || '1h';
+
+            const response = await fetch(
+                `${this.apiGateway}/traffic/flows?network=${networkFilter}&timeRange=${timeRange}`
+            );
+            const result = await response.json();
+            const flows = result.flows || [];
+
+            const processedData = this.processTrafficFlows(flows, networkFilter);
+            this.createTrafficChart(processedData);
+        } catch (error) {
+            console.error('Error loading network traffic:', error);
+        }
+    }
     
 
     getMockTrafficData() {
@@ -218,37 +236,64 @@ class UnifiedSecurityPlatform {
     }
 
     processTrafficFlows(flows, networkFilter = 'all') {
+        const timestamps = [];
+        const inbound = [];
+        const outbound = [];
 
-    // === MOCK MODE : generate fake traffic timeline ===
-    const points = 20; // number of points on the graph
-    const timestamps = [];
-    const inbound = [];
-    const outbound = [];
+        if (!Array.isArray(flows) || flows.length === 0) {
+            return { timestamps, inbound, outbound };
+        }
 
-    const now = new Date();
+        let filtered = flows;
+        if (networkFilter !== 'all') {
+            const prefix = networkFilter.split('/')[0];
+            filtered = flows.filter(flow => {
+                const src = flow.src_ip || '';
+                const dst = flow.dest_ip || '';
+                return src.startsWith(prefix) || dst.startsWith(prefix);
+            });
+        }
 
-    for (let i = points - 1; i >= 0; i--) {
-        const t = new Date(now.getTime() - i * 30 * 1000); // every 30s
+        filtered.sort((a, b) => {
+            const ta = new Date(a.start_time || a.timestamp || 0).getTime();
+            const tb = new Date(b.start_time || b.timestamp || 0).getTime();
+            return ta - tb;
+        });
 
-        timestamps.push(
-            t.toLocaleTimeString('en-US', {
-                hour12: false,
-                timeZone: 'America/Montreal',
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            })
-        );
+        const buckets = new Map();
+        filtered.forEach(flow => {
+            const ts = new Date(flow.start_time || flow.timestamp || Date.now()).getTime();
+            if (!ts || Number.isNaN(ts)) return;
+            const bucket = Math.floor(ts / 60000) * 60000;
+            if (!buckets.has(bucket)) {
+                buckets.set(bucket, { inbound: 0, outbound: 0 });
+            }
+            const entry = buckets.get(bucket);
+            const inboundBytes = Number(flow.bytes_to_client || 0);
+            const outboundBytes = Number(flow.bytes_to_server || 0);
+            if (inboundBytes || outboundBytes) {
+                entry.inbound += inboundBytes;
+                entry.outbound += outboundBytes;
+            } else {
+                const bytes = Number(flow.bytes || flow.bytes_total || 0);
+                entry.inbound += bytes / 2;
+                entry.outbound += bytes / 2;
+            }
+        });
 
-        // realistic mock traffic (KB)
-        inbound.push(Number((Math.random() * 80 + 20).toFixed(2)));   // 20–100 KB
-        outbound.push(Number((Math.random() * 60 + 10).toFixed(2))); // 10–70 KB
+        Array.from(buckets.entries())
+            .sort((a, b) => a[0] - b[0])
+            .forEach(([ts, val]) => {
+                const t = new Date(ts);
+                timestamps.push(
+                    t.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+                );
+                inbound.push(Number((val.inbound / 1024).toFixed(2)));
+                outbound.push(Number((val.outbound / 1024).toFixed(2)));
+            });
+
+        return { timestamps, inbound, outbound };
     }
-
-    console.log('MOCK traffic generated:', inbound.slice(-3), outbound.slice(-3));
-
-    return { timestamps, inbound, outbound };
-}
 
 
     createTrafficChart(data) {
@@ -449,3 +494,4 @@ function updateTimestamps() {
 
 // Update timestamps every minute
 setInterval(updateTimestamps, 60000);
+

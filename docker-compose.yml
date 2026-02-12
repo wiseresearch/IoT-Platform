@@ -64,11 +64,16 @@ services:
       - DB_PASS=security_pass
       - DB_NAME=unified_security
       - REDIS_HOST=redis
-      - VULNERABILITY_SERVICE_URL=http://host.docker.internal:5001
+      - VULNERABILITY_SERVICE_URL=http://vulnerability-scanner:5001
       - TRAFFIC_SERVICE_URL=http://traffic-analyzer:5002
       - CORRELATION_SERVICE_URL=http://correlation-engine:5003
+      - HOST_TRAFFIC_MONITOR_URL=http://host.docker.internal:5556
+      - HOST_SCANNER_API_URL=http://host.docker.internal:5555
+      - VERSION_CONFIDENCE_THRESHOLD=70
     networks:
       - security-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # === Vulnerability Scanner Service ===
   vulnerability-scanner:
@@ -87,9 +92,12 @@ services:
       - DB_USER=security_user
       - DB_PASS=security_pass
       - DB_NAME=unified_security
-      - REDIS_HOST=host.docker.internal
-      - CELERY_BROKER_URL=redis://host.docker.internal:63790/0
-      - CELERY_RESULT_BACKEND=redis://host.docker.internal:63790/1
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CVE_API_BASE=https://cve.circl.lu/api
+      - CVE_CACHE_TTL_SECONDS=86400
+      - VERSION_CONFIDENCE_THRESHOLD=70
     cap_add:
       - NET_RAW
       - NET_ADMIN
@@ -118,6 +126,9 @@ services:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - CVE_API_BASE=https://cve.circl.lu/api
+      - CVE_CACHE_TTL_SECONDS=86400
+      - VERSION_CONFIDENCE_THRESHOLD=70
     cap_add:
       - NET_RAW
       - NET_ADMIN
@@ -127,7 +138,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >
-      celery -A app.celery worker --loglevel=info
+      celery -A app.celery worker --loglevel=info -Q scan_queue
 
   # === Traffic Analyzer Service (Suricata + gRPC) ===
   traffic-analyzer:
@@ -198,7 +209,7 @@ services:
       - DB_PASS=security_pass
       - DB_NAME=unified_security
       - REDIS_HOST=redis
-      - VULNERABILITY_SERVICE_URL=http://host.docker.internal:5001
+      - VULNERABILITY_SERVICE_URL=http://vulnerability-scanner:5001
       - TRAFFIC_SERVICE_URL=http://traffic-analyzer:5002
     networks:
       - security-net
@@ -271,10 +282,11 @@ networks:
       com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
     ipam:
       config:
-        - subnet: 10.10.0.0/24
+        - subnet: 192.168.250.0/24
   monitor-net:
     driver: bridge
     ipam:
       config:
-        - subnet: 10.11.0.0/24
-          gateway: 10.11.0.1
+        - subnet: 192.168.251.0/24
+          gateway: 192.168.251.1
+
