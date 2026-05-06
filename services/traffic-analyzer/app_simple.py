@@ -11,7 +11,7 @@ CORS(app)
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'unified-db'),
     'user': os.getenv('DB_USER', 'security_user'),
-    'password': os.getenv('DB_PASS', 'security_pass'),
+    'password': os.getenv('DB_PASS', 'change_me_db_password'),
     'database': os.getenv('DB_NAME', 'unified_security')
 }
 

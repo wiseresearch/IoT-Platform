@@ -5,12 +5,13 @@ import redis
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 import grpc
 from concurrent import futures
 import time
 import sys
+import hashlib
 
 def wait_for_dependencies():
     """Wait for database and Redis to be ready"""
@@ -23,7 +24,7 @@ def wait_for_dependencies():
             conn = mysql.connector.connect(**{
                 'host': os.getenv('DB_HOST', 'unified-db'),
                 'user': os.getenv('DB_USER', 'security_user'),
-                'password': os.getenv('DB_PASS', 'security_pass'),
+                'password': os.getenv('DB_PASS', 'change_me_db_password'),
                 'database': os.getenv('DB_NAME', 'unified_security')
             })
             conn.close()
@@ -63,7 +64,7 @@ CORS(app)
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'unified-db'),
     'user': os.getenv('DB_USER', 'security_user'),
-    'password': os.getenv('DB_PASS', 'security_pass'),
+    'password': os.getenv('DB_PASS', 'change_me_db_password'),
     'database': os.getenv('DB_NAME', 'unified_security')
 }
 
@@ -110,10 +111,133 @@ class DatabaseManager:
 
 db = DatabaseManager()
 
+
+SURICATA_SEVERITY_MAP = {
+    1: 'critical',
+    2: 'high',
+    3: 'medium',
+    4: 'low'
+}
+
+
+def parse_suricata_timestamp(value):
+    if not value:
+        return datetime.utcnow()
+
+    text = str(value).strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except Exception:
+        logger.warning(f"Failed to parse Suricata timestamp '{value}', using current UTC time.")
+        return datetime.utcnow()
+
+
+def map_suricata_severity(alert_block):
+    try:
+        numeric = int((alert_block or {}).get('severity'))
+    except (TypeError, ValueError):
+        numeric = None
+
+    if numeric in SURICATA_SEVERITY_MAP:
+        return SURICATA_SEVERITY_MAP[numeric]
+
+    signature = str((alert_block or {}).get('signature') or '').lower()
+    category = str((alert_block or {}).get('category') or '').lower()
+    combined = f"{signature} {category}"
+    if 'critical' in combined:
+        return 'critical'
+    if 'high' in combined:
+        return 'high'
+    if 'medium' in combined:
+        return 'medium'
+    return 'low'
+
+
+def normalize_suricata_action(alert_block):
+    action = str((alert_block or {}).get('action') or 'alert').strip().lower()
+    if action in ('drop', 'blocked', 'block'):
+        return 'drop'
+    if action in ('reject', 'rejected'):
+        return 'reject'
+    if action in ('pass', 'allowed', 'allow'):
+        return 'pass'
+    return 'alert'
+
+
+def build_suricata_alert_id(event, alert_block):
+    signature_id = alert_block.get('signature_id') or 'na'
+    identity = json.dumps(
+        {
+            'timestamp': event.get('timestamp'),
+            'flow_id': event.get('flow_id'),
+            'signature_id': signature_id,
+            'src_ip': event.get('src_ip'),
+            'src_port': event.get('src_port'),
+            'dest_ip': event.get('dest_ip'),
+            'dest_port': event.get('dest_port'),
+            'proto': event.get('proto'),
+        },
+        sort_keys=True,
+        default=str
+    )
+    digest = hashlib.sha1(identity.encode('utf-8')).hexdigest()[:20]
+    return f"suricata-{signature_id}-{digest}"
+
+
+def build_suricata_alert_record(event):
+    if not isinstance(event, dict) or event.get('event_type') != 'alert':
+        return None
+
+    alert_block = event.get('alert') or {}
+    src_ip = event.get('src_ip')
+    dest_ip = event.get('dest_ip')
+    if not src_ip or not dest_ip:
+        return None
+
+    signature = str(alert_block.get('signature') or '').strip()
+    if not signature:
+        signature_id = alert_block.get('signature_id') or 'unknown'
+        signature = f"Suricata SID {signature_id}"
+
+    rule_id = alert_block.get('signature_id')
+    try:
+        rule_id = int(rule_id) if rule_id is not None else None
+    except (TypeError, ValueError):
+        rule_id = None
+
+    return {
+        'alert_id': build_suricata_alert_id(event, alert_block),
+        'rule_id': rule_id,
+        'signature': signature[:500],
+        'category': (alert_block.get('category') or 'Suricata Alert')[:100],
+        'severity': map_suricata_severity(alert_block),
+        'src_ip': src_ip,
+        'dest_ip': dest_ip,
+        'src_port': event.get('src_port'),
+        'dest_port': event.get('dest_port'),
+        'protocol': str(event.get('proto') or event.get('app_proto') or '').lower()[:20] or None,
+        'action_taken': normalize_suricata_action(alert_block),
+        'timestamp': parse_suricata_timestamp(event.get('timestamp')),
+        'metadata': event,
+    }
+
 class TrafficAnalyzer:
     def __init__(self):
         self.running = False
         self.analysis_thread = None
+        self.eve_monitor_thread = None
+        self.suricata_eve_enabled = os.getenv('SURICATA_EVE_MONITOR_ENABLED', 'true').lower() in ('1', 'true', 'yes')
+        self.suricata_eve_file = os.getenv('SURICATA_EVE_FILE', '/var/log/suricata/eve.json')
+        self.suricata_eve_poll_seconds = float(os.getenv('SURICATA_EVE_POLL_SECONDS', '1'))
+        self.suricata_eve_start_position = os.getenv('SURICATA_EVE_START_POSITION', 'end').strip().lower()
+        self.last_suricata_alert_at = None
+        self.last_suricata_alert_id = None
     
     def start_analysis(self):
         """Start traffic analysis"""
@@ -121,6 +245,9 @@ class TrafficAnalyzer:
             self.running = True
             self.analysis_thread = threading.Thread(target=self.analyze_traffic, daemon=True)
             self.analysis_thread.start()
+            if self.suricata_eve_enabled:
+                self.eve_monitor_thread = threading.Thread(target=self.monitor_suricata_eve, daemon=True)
+                self.eve_monitor_thread.start()
             logger.info("Traffic analysis started")
     
     def analyze_traffic(self):
@@ -186,6 +313,115 @@ class TrafficAnalyzer:
                 
         except Exception as e:
             logger.error(f"Error monitoring real connections: {str(e)}")
+
+    def monitor_suricata_eve(self):
+        """Tail Suricata EVE logs and ingest alert events into security_alerts."""
+        handle = None
+        current_inode = None
+        initial_seek_done = False
+
+        while self.running:
+            try:
+                if not os.path.exists(self.suricata_eve_file):
+                    time.sleep(self.suricata_eve_poll_seconds)
+                    continue
+
+                stat = os.stat(self.suricata_eve_file)
+                needs_reopen = handle is None or current_inode != stat.st_ino
+                is_truncated = handle is not None and handle.tell() > stat.st_size
+                if needs_reopen or is_truncated:
+                    if handle:
+                        handle.close()
+                    handle = open(self.suricata_eve_file, 'r', encoding='utf-8', errors='replace')
+                    current_inode = stat.st_ino
+
+                    if not initial_seek_done and self.suricata_eve_start_position == 'end':
+                        handle.seek(0, os.SEEK_END)
+                    else:
+                        handle.seek(0)
+
+                    initial_seek_done = True
+                    logger.info(f"Monitoring Suricata EVE file: {self.suricata_eve_file}")
+
+                line = handle.readline()
+                if not line:
+                    time.sleep(self.suricata_eve_poll_seconds)
+                    continue
+
+                self.process_suricata_eve_line(line)
+            except Exception as e:
+                logger.error(f"Suricata EVE monitor error: {str(e)}")
+                time.sleep(max(self.suricata_eve_poll_seconds, 1))
+        if handle:
+            handle.close()
+
+    def process_suricata_eve_line(self, line):
+        try:
+            event = json.loads((line or '').strip())
+        except json.JSONDecodeError:
+            return
+
+        if event.get('event_type') != 'alert':
+            return
+
+        self.save_suricata_alert(event)
+
+    def save_suricata_alert(self, event):
+        """Persist a Suricata alert event to the unified security_alerts table."""
+        alert = build_suricata_alert_record(event)
+        if not alert:
+            return
+
+        try:
+            query = """
+            INSERT INTO security_alerts (
+                alert_id, rule_id, signature, category, severity, src_ip, dest_ip,
+                src_port, dest_port, protocol, action_taken, timestamp, metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                signature = VALUES(signature),
+                category = VALUES(category),
+                severity = VALUES(severity),
+                action_taken = VALUES(action_taken),
+                metadata = VALUES(metadata),
+                updated_at = CURRENT_TIMESTAMP
+            """
+
+            params = (
+                alert['alert_id'],
+                alert['rule_id'],
+                alert['signature'],
+                alert['category'],
+                alert['severity'],
+                alert['src_ip'],
+                alert['dest_ip'],
+                alert['src_port'],
+                alert['dest_port'],
+                alert['protocol'],
+                alert['action_taken'],
+                alert['timestamp'],
+                json.dumps(alert['metadata'], default=str)
+            )
+
+            db.execute_query(query, params)
+            self.last_suricata_alert_at = alert['timestamp'].isoformat()
+            self.last_suricata_alert_id = alert['alert_id']
+
+            redis_client.publish('traffic_events', json.dumps({
+                'event_type': 'alert',
+                'alert_id': alert['alert_id'],
+                'signature': alert['signature'],
+                'severity': alert['severity'],
+                'src_ip': alert['src_ip'],
+                'dest_ip': alert['dest_ip'],
+                'src_port': alert['src_port'],
+                'dest_port': alert['dest_port'],
+                'protocol': alert['protocol'],
+                'timestamp': self.last_suricata_alert_at,
+            }))
+        except Exception as e:
+            logger.error(f"Error saving Suricata alert: {str(e)}")
     
     def parse_netstat_output(self, netstat_output, timestamp):
         """Parse netstat output to extract network connections"""
@@ -363,6 +599,10 @@ def health_check():
         return jsonify({
             'status': 'healthy',
             'service': 'traffic-analyzer',
+            'suricata_eve_enabled': traffic_analyzer.suricata_eve_enabled,
+            'suricata_eve_file': traffic_analyzer.suricata_eve_file,
+            'last_suricata_alert_at': traffic_analyzer.last_suricata_alert_at,
+            'last_suricata_alert_id': traffic_analyzer.last_suricata_alert_id,
             'timestamp': datetime.utcnow().isoformat()
         })
     except Exception as e:

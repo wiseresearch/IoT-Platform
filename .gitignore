@@ -10,6 +10,9 @@
 services/network-scanner/results/*.json
 services/network-scanner/results/*.txt
 *.log
+*.pcap
+*.pcapng
+*.cap
 
 # Python cache
 __pycache__/
@@ -57,6 +60,11 @@ shared/database/data/
 *.tmp
 *.temp
 temp/
+.edge-tmp/
+.tmp_repo_suricata/
+.tmp_tenyar_suricata/
+Crashpad/
+*.dmp
 
 # Node modules (if any)
 node_modules/

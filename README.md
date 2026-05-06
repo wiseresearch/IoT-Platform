@@ -101,7 +101,7 @@ Edit `.env` with your configuration:
 # Database Configuration
 DB_HOST=unified-db
 DB_USER=security_user
-DB_PASS=security_pass
+DB_PASS=change_me_db_password
 DB_NAME=unified_security_db
 
 # Redis Configuration
@@ -174,7 +174,7 @@ Connection settings in `.env`:
 DB_HOST=unified-db
 DB_PORT=3306
 DB_USER=security_user
-DB_PASS=security_pass
+DB_PASS=change_me_db_password
 DB_NAME=unified_security_db
 ```
 
@@ -286,7 +286,7 @@ Response:
    ```
 2. Test database connection:
    ```bash
-   docker exec unified_security_db mysql -u security_user -psecurity_pass -e "SELECT 1"
+   docker exec unified_security_db mysql -u security_user -p<your_db_password> -e "SELECT 1"
    ```
 3. Restart services if needed:
    ```bash
