@@ -66,6 +66,9 @@ temp/
 Crashpad/
 *.dmp
 
+# Private internship reports
+Compte_rendu*.md
+
 # Node modules (if any)
 node_modules/
 
