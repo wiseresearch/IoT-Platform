@@ -5,6 +5,7 @@ import os
 import redis
 import json
 import secrets
+import concurrent.futures
 from datetime import datetime, timedelta
 import jwt
 from functools import wraps
@@ -39,6 +40,14 @@ redis_client = redis.Redis(
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+vulnerabilities_cache = {
+    'items': [],
+    'updated_at': None
+}
+device_cve_alerts_cache = {
+    'items': [],
+    'updated_at': None
+}
 
 # Authentication decorator
 def auth_required(f):
@@ -518,165 +527,608 @@ def test_endpoint():
 @app.route('/api/vulnerabilities', methods=['GET'])
 # @auth_required  # Temporarily disabled for testing
 def get_vulnerabilities():
-    """Get vulnerability data"""
+    """Get vulnerability data (fast proxy + stale cache fallback)."""
+    global vulnerabilities_cache
+    force_refresh = str(request.args.get('force_refresh', '0')).lower() in ('1', 'true', 'yes')
     try:
-        force_refresh = str(request.args.get('force_refresh', '0')).lower() in ('1', 'true', 'yes')
-        base_vulns = []
-        try:
-            response = requests.get(
-                f"{VULNERABILITY_SERVICE}/vulnerabilities",
-                params={'force_refresh': '1' if force_refresh else '0'},
-                timeout=30
-            )
-            if response.ok:
-                payload = response.json()
-                base_vulns = payload.get('vulnerabilities', []) or []
-        except Exception:
-            base_vulns = []
+        response = requests.get(
+            f"{VULNERABILITY_SERVICE}/vulnerabilities",
+            params={'force_refresh': '1' if force_refresh else '0'},
+            timeout=25
+        )
+        if response.ok:
+            payload = response.json() or {}
+            items = payload.get('vulnerabilities', []) or []
+            vulnerabilities_cache = {
+                'items': items,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            return jsonify({'vulnerabilities': items})
 
-        # Always merge DHCP devices so all connected devices appear
-        version_threshold = int(os.getenv('VERSION_CONFIDENCE_THRESHOLD', '70'))
-        dhcp_response = requests.get(f"{HOST_TRAFFIC_MONITOR}/dhcp/devices", timeout=10)
-        dhcp_payload = dhcp_response.json() if dhcp_response.ok else {}
-        dhcp_devices = dhcp_payload.get('devices', []) or []
+        logger.warning(f"Vulnerability scanner returned status {response.status_code}; using cache if available")
+    except Exception as e:
+        logger.error(f"Vulnerabilities proxy error: {str(e)}")
+
+    # Fallback to the last successful response instead of returning empty.
+    cached_items = vulnerabilities_cache.get('items') or []
+    if cached_items:
+        return jsonify({
+            'vulnerabilities': cached_items,
+            'cache_mode': 'stale-fallback',
+            'cached_at': vulnerabilities_cache.get('updated_at')
+        })
+
+    # Last-resort fallback: derive minimal per-device rows from local device-alerts.
+    try:
+        alerts_resp = requests.get(
+            f"{VULNERABILITY_SERVICE}/vulnerabilities/device-alerts",
+            params={'limit': 500},
+            timeout=10
+        )
+        if alerts_resp.ok:
+            alerts_payload = alerts_resp.json() or {}
+            alerts = alerts_payload.get('alerts') or []
+            by_device = {}
+            for row in alerts:
+                ip = row.get('device_ip') or ''
+                hostname = row.get('hostname') or ''
+                mac = row.get('mac_address') or ''
+                key = (str(mac).strip().lower() or str(ip).strip().lower() or str(hostname).strip().lower() or 'unknown')
+                item = by_device.get(key)
+                if not item:
+                    item = {
+                        'device_id': row.get('device_id'),
+                        'ip_address': ip,
+                        'hostname': hostname,
+                        'mac_address': mac,
+                        'affected_device': hostname or mac or ip or 'Unknown',
+                        'detected_os': 'Unknown',
+                        'eligible': False,
+                        'last_checked': row.get('time'),
+                        'correlation_explanation': 'Derived from local CVE status records while correlation service is unavailable.',
+                        'vulnerability_summary': {'critical': 0, 'high': 0, 'medium': 0, 'low': 0},
+                        'cve_list': []
+                    }
+                    by_device[key] = item
+                severity = str(row.get('severity') or '').strip().lower()
+                if severity in item['vulnerability_summary']:
+                    item['vulnerability_summary'][severity] += 1
+                cve_id = str(row.get('cve_id') or '').strip().upper()
+                if cve_id and cve_id not in item['cve_list']:
+                    item['cve_list'].append(cve_id)
+            synthesized = list(by_device.values())
+            if synthesized:
+                vulnerabilities_cache = {
+                    'items': synthesized,
+                    'updated_at': datetime.utcnow().isoformat()
+                }
+                return jsonify({
+                    'vulnerabilities': synthesized,
+                    'cache_mode': 'derived-from-device-alerts',
+                    'cached_at': vulnerabilities_cache.get('updated_at')
+                })
+    except Exception as fallback_error:
+        logger.warning(f"Vulnerabilities fallback synthesis failed: {str(fallback_error)}")
+
+    return jsonify({'vulnerabilities': [], 'cache_mode': 'empty'})
+
+
+@app.route('/api/vulnerabilities/device-alerts', methods=['GET'])
+def get_device_cve_alerts():
+    """Return per-device CVE alerts (correlated CVEs + local fixed status when available)."""
+    global device_cve_alerts_cache
+    try:
+        limit_raw = request.args.get('limit', '300')
+        try:
+            limit = max(1, min(int(limit_raw), 2000))
+        except ValueError:
+            limit = 300
+
+        # 1) Correlated CVE rows from vulnerability view (usually much larger than local DB links)
+        corr_resp = requests.get(f"{VULNERABILITY_SERVICE}/vulnerabilities", timeout=12)
+        corr_payload = {}
+        if corr_resp.ok:
+            try:
+                corr_payload = corr_resp.json() or {}
+            except Exception:
+                corr_payload = {}
+        correlated_rows = corr_payload.get('vulnerabilities', []) or []
+
+        # 2) Local DB status rows (open/patched/mitigated) for fixed/not-fixed mapping
+        local_resp = requests.get(
+            f"{VULNERABILITY_SERVICE}/vulnerabilities/device-alerts",
+            params={'limit': max(limit, 1000)},
+            timeout=10
+        )
+        local_payload = {}
+        if local_resp.ok:
+            try:
+                local_payload = local_resp.json() or {}
+            except Exception:
+                local_payload = {}
+        local_rows = local_payload.get('alerts', []) or []
 
         def normalize_mac(value):
             if not value:
                 return ''
-            return value.strip().lower().replace('-', ':')
+            return str(value).strip().lower().replace('-', ':')
 
-        def normalize_text(value):
-            return (value or '').strip()
+        def device_key(ip_value, mac_value, host_value):
+            ip = (ip_value or '').strip().lower()
+            mac = normalize_mac(mac_value)
+            host = (host_value or '').strip().lower()
+            return mac or ip or host or 'unknown'
 
-        def network_prefix(ip):
-            if not ip:
-                return ''
-            parts = str(ip).split('.')
-            if len(parts) != 4:
-                return ''
-            try:
-                int_parts = [int(p) for p in parts]
-            except ValueError:
-                return ''
-            return f"{int_parts[0]}.{int_parts[1]}.{int_parts[2]}.0/24"
-
-        def vuln_key(item):
-            mac = normalize_mac(item.get('mac_address') or '')
-            if mac:
-                return f"mac:{mac}"
-            hostname = normalize_text(item.get('hostname') or '').lower()
-            if hostname and hostname != '-':
-                return f"host:{hostname}"
-            ip = normalize_text(item.get('ip_address') or '')
-            if ip and ip != '-':
-                return f"ip:{ip}"
-            affected = normalize_text(item.get('affected_device') or '').lower()
-            if affected and affected != 'unknown':
-                return f"dev:{affected}"
-            return f"row:{item.get('device_id') or item.get('id') or id(item)}"
-
-        def merge_item(existing, incoming):
-            merged = dict(existing)
-            for field in (
-                'ip_address', 'mac_address', 'hostname', 'vendor',
-                'device_type', 'network_prefix', 'detected_os'
-            ):
-                if not merged.get(field) and incoming.get(field):
-                    merged[field] = incoming.get(field)
-            return merged
-
-        results_map = {}
-        for item in base_vulns:
-            key = vuln_key(item)
-            results_map[key] = item
-
-        os_summary_cache = {}
-        for device in dhcp_devices:
-            os_name = (device.get('os') or '').strip()
-            os_version = (device.get('os_version') or '').strip()
-            confidence = int(device.get('os_confidence') or 0)
-            version_confidence = int(device.get('version_confidence') or 0)
-            eligible = bool(os_name) and os_name.lower() != 'unknown' and confidence >= 75
-
-            summary = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
-            last_checked = None
-            explanation = "OS unknown or low confidence; CVE correlation skipped"
-            correlation_mode = "none"
-            cve_list = None
-            detected_os = os_name + (f" {os_version}" if os_version else "")
-
-            if eligible:
-                os_key = f"{os_name}::{os_version}"
-                if os_key not in os_summary_cache:
-                    summary = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
-                    last_checked = None
-                    explanation = "Passive OS-level correlation; not a confirmed vulnerability"
-                    correlation_mode = "os-level"
-                    cve_list = None
-                    use_version = os_version and os_version.lower() != 'unknown' and version_confidence >= version_threshold
-
-                    try:
-                        summary_response = requests.post(
-                            f"{VULNERABILITY_SERVICE}/os-summary",
-                            json={
-                                'os_name': os_name,
-                                'os_version': os_version,
-                                'version_confidence': version_confidence,
-                                # Always ask for CVE list so UI can show examples
-                                'include_cves': True,
-                                'force_refresh': force_refresh
-                            },
-                            timeout=20
-                        )
-                        if summary_response.ok:
-                            summary_payload = summary_response.json()
-                            summary = summary_payload.get('summary', summary)
-                            last_checked = summary_payload.get('last_checked')
-                            correlation_mode = summary_payload.get('correlation_mode', correlation_mode)
-                            cve_list = summary_payload.get('cve_list')
-                        else:
-                            explanation = "Passive OS-level correlation; OS mapping not supported"
-                    except Exception:
-                        explanation = "Passive OS-level correlation; CVE lookup unavailable"
-
-                    if correlation_mode == "os-version-level":
-                        explanation = "Passive OS-version correlation; not a confirmed vulnerability"
-                    os_summary_cache[os_key] = (summary, last_checked, explanation, correlation_mode, cve_list)
-
-                summary, last_checked, explanation, correlation_mode, cve_list = os_summary_cache[os_key]
-
-            device_label = device.get('hostname') or device.get('mac_address') or device.get('ip_address') or 'Unknown'
-            item = {
-                'affected_device': device_label,
-                'detected_os': detected_os,
-                'eligible': eligible,
-                'os': os_name,
-                'os_version': os_version or 'unknown',
-                'os_confidence': confidence,
-                'version_confidence': version_confidence,
-                'correlation_mode': correlation_mode,
-                'vulnerability_summary': summary,
-                'last_checked': last_checked,
-                'cve_list': cve_list,
-                'correlation_explanation': explanation,
-                'ip_address': device.get('ip_address'),
-                'mac_address': device.get('mac_address'),
-                'hostname': device.get('hostname'),
-                'vendor': device.get('vendor_class') or device.get('vendor') or '',
-                'device_type': device.get('device_type') or 'DHCP Fingerprint',
-                'network_prefix': network_prefix(device.get('ip_address'))
+        # index local status by (device_key, cve_id)
+        local_status_map = {}
+        for row in local_rows:
+            cve_id = str(row.get('cve_id') or '').strip().upper()
+            if not cve_id:
+                continue
+            key = device_key(row.get('device_ip'), row.get('mac_address'), row.get('hostname'))
+            local_status_map[(key, cve_id)] = {
+                'status': str(row.get('status') or 'open').strip().lower(),
+                'time': row.get('time')
             }
 
-            key = vuln_key(item)
-            if key in results_map:
-                results_map[key] = merge_item(results_map[key], item)
-            else:
-                results_map[key] = item
+        alerts = []
+        seen = set()
+        for vuln in correlated_rows:
+            cve_list = vuln.get('cve_list') or []
+            if not isinstance(cve_list, list) or len(cve_list) == 0:
+                continue
 
-        return jsonify({'vulnerabilities': list(results_map.values())})
+            ip_address = vuln.get('ip_address')
+            mac_address = vuln.get('mac_address')
+            hostname = vuln.get('hostname') or vuln.get('affected_device')
+            dkey = device_key(ip_address, mac_address, hostname)
+            time_value = vuln.get('last_checked')
+
+            sev_summary = vuln.get('vulnerability_summary') or {}
+            default_severity = 'unknown'
+            if (sev_summary.get('critical') or 0) > 0:
+                default_severity = 'critical'
+            elif (sev_summary.get('high') or 0) > 0:
+                default_severity = 'high'
+            elif (sev_summary.get('medium') or 0) > 0:
+                default_severity = 'medium'
+            elif (sev_summary.get('low') or 0) > 0:
+                default_severity = 'low'
+
+            for cve in cve_list:
+                cve_id = str(cve or '').strip().upper()
+                if not cve_id:
+                    continue
+                uniq = (dkey, cve_id)
+                if uniq in seen:
+                    continue
+                seen.add(uniq)
+
+                local = local_status_map.get((dkey, cve_id))
+                status = (local or {}).get('status', 'open')
+                fixed = status in ('patched', 'mitigated')
+
+                alerts.append({
+                    'time': (local or {}).get('time') or time_value,
+                    'device_id': vuln.get('device_id'),
+                    'device_ip': ip_address,
+                    'hostname': hostname,
+                    'mac_address': mac_address,
+                    'cve_id': cve_id,
+                    'severity': default_severity,
+                    'cvss_score': None,
+                    'status': status,
+                    'fixed': fixed
+                })
+
+        # fallback to local rows if no correlated list available
+        if not alerts and local_rows:
+            alerts = local_rows
+
+        alerts.sort(key=lambda x: str(x.get('time') or ''), reverse=True)
+        alerts = alerts[:limit]
+        device_cve_alerts_cache = {
+            'items': alerts,
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        return jsonify({'alerts': alerts})
     except Exception as e:
-        logger.error(f"Vulnerabilities proxy error: {str(e)}")
-        return jsonify({'error': 'Service unavailable'}), 503
+        logger.error(f"Device CVE alerts proxy error: {str(e)}")
+        cached_items = device_cve_alerts_cache.get('items') or []
+        if cached_items:
+            return jsonify({
+                'alerts': cached_items[:max(1, min(int(request.args.get("limit", "300") or "300"), 2000))],
+                'cache_mode': 'stale-fallback',
+                'cached_at': device_cve_alerts_cache.get('updated_at')
+            })
+        return jsonify({'alerts': []})
+
+
+@app.route('/api/vulnerabilities/general-report', methods=['POST'])
+def get_device_general_report():
+    """Build a unified per-device vulnerability report and LLM summary."""
+    try:
+        data = request.get_json(silent=True) or {}
+        device_id = data.get('device_id')
+        ip_address = (data.get('ip_address') or '').strip()
+        mac_address = (data.get('mac_address') or '').strip()
+        hostname = (data.get('hostname') or '').strip()
+        os_name = (data.get('os') or '').strip()
+        os_version = (data.get('os_version') or '').strip()
+        corr_summary = data.get('vulnerability_summary') or {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        corr_cve_list = data.get('cve_list') or []
+        telemetry_window_hours = request.args.get('window_hours', default=72, type=int) or 72
+        telemetry_window_hours = max(24, min(telemetry_window_hours, 720))
+        telemetry_limit = request.args.get('telemetry_limit', default=2000, type=int) or 2000
+        telemetry_limit = max(200, min(telemetry_limit, 4000))
+
+        if not any([device_id, ip_address, mac_address, hostname]):
+            return jsonify({'error': 'At least one device identifier is required'}), 400
+
+        # 1) Pull device context (status, open ports, existing CVE statuses)
+        context_params = {}
+        if device_id is not None:
+            context_params['device_id'] = str(device_id)
+        if ip_address:
+            context_params['ip_address'] = ip_address
+        if mac_address:
+            context_params['mac_address'] = mac_address
+        if hostname:
+            context_params['hostname'] = hostname
+
+        device = {}
+        open_ports = []
+        cve_entries = []
+        cve_status_summary = {'open': 0, 'patched': 0, 'mitigated': 0, 'false_positive': 0}
+        try:
+            device_context_resp = requests.get(
+                f"{VULNERABILITY_SERVICE}/device-report-context",
+                params=context_params,
+                timeout=4
+            )
+            if device_context_resp.ok:
+                context_payload = device_context_resp.json() or {}
+                device = context_payload.get('device') or {}
+                open_ports = context_payload.get('open_ports') or []
+                cve_status_summary = context_payload.get('cve_status_summary') or cve_status_summary
+                cve_entries = context_payload.get('cve_entries') or []
+        except Exception:
+            pass
+
+        if not device:
+            device = {
+                'id': device_id,
+                'ip_address': ip_address,
+                'mac_address': mac_address,
+                'hostname': hostname,
+                'os_name': os_name or 'Unknown',
+                'os_version': os_version or 'unknown',
+                'status': 'unknown',
+                'risk_level': 'low',
+                'last_seen': None
+            }
+
+        device_ip = (device.get('ip_address') or ip_address or '').strip()
+        device_mac = (device.get('mac_address') or mac_address or '').strip().lower().replace('-', ':')
+        device_host = (device.get('hostname') or hostname or '').strip().lower()
+
+        # 2) Pull telemetry in parallel with short timeouts to keep UI responsive
+        def safe_get_json(url, timeout_seconds=3):
+            try:
+                resp = requests.get(url, timeout=timeout_seconds)
+                if resp.ok:
+                    return resp.json() or {}
+            except Exception:
+                pass
+            return {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_flows = executor.submit(
+                safe_get_json,
+                f"{TRAFFIC_SERVICE}/traffic/flows?window_hours={telemetry_window_hours}&limit={telemetry_limit}",
+                4
+            )
+            future_alerts = executor.submit(
+                safe_get_json,
+                f"{TRAFFIC_SERVICE}/alerts?window_hours={telemetry_window_hours}&limit={telemetry_limit}&include_closed=1",
+                4
+            )
+            future_incidents = executor.submit(safe_get_json, f"{CORRELATION_SERVICE}/incidents", 3)
+            flows_payload = future_flows.result()
+            alerts_payload = future_alerts.result()
+            incidents_payload = future_incidents.result()
+
+        flows = flows_payload.get('flows') or []
+        alerts = alerts_payload.get('alerts') or []
+        incidents = incidents_payload.get('incidents') or []
+
+        def match_ip(candidate):
+            return bool(device_ip) and str(candidate or '').strip().lower() == device_ip.lower()
+
+        matched_flows = []
+        protocols = {}
+        observed_ports = set()
+        total_bytes = 0
+        inbound_bytes = 0
+        outbound_bytes = 0
+        telemetry_source = 'traffic-analyzer'
+        for flow in flows:
+            src_ip = (flow.get('src_ip') or '').strip().lower()
+            dst_ip = (flow.get('dest_ip') or '').strip().lower()
+            if not device_ip:
+                continue
+            if src_ip != device_ip.lower() and dst_ip != device_ip.lower():
+                continue
+            matched_flows.append(flow)
+            bytes_total = int(flow.get('bytes_to_server') or 0) + int(flow.get('bytes_to_client') or 0)
+            total_bytes += bytes_total
+            if src_ip == device_ip.lower():
+                outbound_bytes += bytes_total
+                if flow.get('src_port'):
+                    observed_ports.add(int(flow.get('src_port')))
+            if dst_ip == device_ip.lower():
+                inbound_bytes += bytes_total
+                if flow.get('dest_port'):
+                    observed_ports.add(int(flow.get('dest_port')))
+            proto = (flow.get('protocol') or 'unknown').lower()
+            bucket = protocols.setdefault(proto, {'protocol': proto, 'bytes': 0, 'flows': 0})
+            bucket['bytes'] += bytes_total
+            bucket['flows'] += 1
+
+        # Fallback to host monitor snapshot when traffic_flows table has no matching rows.
+        if not matched_flows and device_ip:
+            try:
+                host_conn_resp = requests.get(f"{HOST_TRAFFIC_MONITOR}/connections", timeout=4)
+                if host_conn_resp.ok:
+                    host_payload = host_conn_resp.json() or {}
+                    for conn in host_payload.get('connections') or []:
+                        src_ip = (conn.get('src_ip') or '').strip().lower()
+                        dst_ip = (conn.get('dest_ip') or '').strip().lower()
+                        if src_ip != device_ip.lower() and dst_ip != device_ip.lower():
+                            continue
+                        matched_flows.append(conn)
+                        bytes_total = int(conn.get('bytes_sent') or 0) + int(conn.get('bytes_recv') or 0)
+                        total_bytes += bytes_total
+                        if src_ip == device_ip.lower():
+                            outbound_bytes += bytes_total
+                            if conn.get('src_port'):
+                                observed_ports.add(int(conn.get('src_port')))
+                        if dst_ip == device_ip.lower():
+                            inbound_bytes += bytes_total
+                            if conn.get('dest_port'):
+                                observed_ports.add(int(conn.get('dest_port')))
+                        proto = (conn.get('protocol') or 'unknown').lower()
+                        bucket = protocols.setdefault(proto, {'protocol': proto, 'bytes': 0, 'flows': 0})
+                        bucket['bytes'] += bytes_total
+                        bucket['flows'] += 1
+                    if matched_flows:
+                        telemetry_source = 'host-monitor-fallback'
+            except Exception:
+                pass
+
+        protocol_rows = sorted(protocols.values(), key=lambda x: (x['bytes'], x['flows']), reverse=True)
+        most_used_protocols = [p['protocol'] for p in protocol_rows[:3]]
+
+        matched_alerts = []
+        top_alert_signatures = {}
+        for alert in alerts:
+            src_ip = (alert.get('src_ip') or '').strip().lower()
+            dst_ip = (alert.get('dest_ip') or '').strip().lower()
+            if not device_ip:
+                continue
+            if src_ip != device_ip.lower() and dst_ip != device_ip.lower():
+                continue
+            matched_alerts.append(alert)
+            sig = (alert.get('signature') or 'unknown').strip()
+            top_alert_signatures[sig] = top_alert_signatures.get(sig, 0) + 1
+        top_alert_rows = sorted(
+            [{'signature': k, 'count': v} for k, v in top_alert_signatures.items()],
+            key=lambda x: x['count'],
+            reverse=True
+        )[:5]
+
+        # If upstream correlation summary is empty but local device CVE rows exist, infer counts for visibility.
+        if isinstance(cve_entries, list) and cve_entries and not any(int(corr_summary.get(k) or 0) for k in ('critical', 'high', 'medium', 'low')):
+            inferred = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+            for item in cve_entries:
+                severity = str((item or {}).get('severity') or '').strip().lower()
+                if severity in inferred:
+                    inferred[severity] += 1
+            if any(inferred.values()):
+                corr_summary = inferred
+
+        def flatten_affected_devices(value):
+            if not value:
+                return []
+            parsed = value
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except Exception:
+                    return []
+            if isinstance(parsed, dict):
+                return [parsed]
+            if isinstance(parsed, list):
+                return [x for x in parsed if isinstance(x, dict)]
+            return []
+
+        def incident_matches(incident):
+            assets = flatten_affected_devices(incident.get('affected_devices'))
+            if not assets:
+                return False
+            for asset in assets:
+                a_ip = (asset.get('ip_address') or '').strip().lower()
+                a_mac = (asset.get('mac_address') or '').strip().lower().replace('-', ':')
+                a_host = (asset.get('hostname') or '').strip().lower()
+                if device_ip and a_ip == device_ip.lower():
+                    return True
+                if device_mac and a_mac == device_mac:
+                    return True
+                if device_host and a_host == device_host:
+                    return True
+            return False
+
+        matched_incidents = [inc for inc in incidents if incident_matches(inc)]
+        open_incidents = [
+            inc for inc in matched_incidents
+            if str(inc.get('status') or 'open').strip().lower() in ('open', 'investigating', 'contained', 'triage', 'in_progress')
+        ]
+
+        port_rows = []
+        for port in open_ports:
+            port_num = port.get('port_number')
+            proto = (port.get('protocol') or '').lower()
+            service = port.get('service_name') or ''
+            label = f"{port_num}/{proto}" if proto else str(port_num)
+            if service:
+                label = f"{label} ({service})"
+            port_rows.append(label)
+        if not port_rows and observed_ports:
+            port_rows = [str(p) for p in sorted(observed_ports)]
+        open_ports_total = len(port_rows)
+        if open_ports_total > 25:
+            remaining = open_ports_total - 25
+            port_rows = port_rows[:25] + [f"+{remaining} more"]
+
+        report_payload = {
+            'device': {
+                'device_id': device.get('id') or device_id,
+                'status': device.get('status') or 'unknown',
+                'ip_address': device.get('ip_address') or ip_address,
+                'mac_address': device.get('mac_address') or mac_address,
+                'hostname': device.get('hostname') or hostname,
+                'vendor': device.get('vendor'),
+                'device_type': device.get('device_type'),
+                'risk_level': device.get('risk_level') or 'low',
+                'os': os_name or device.get('os_name') or 'Unknown',
+                'os_version': os_version or device.get('os_version') or 'unknown',
+                'last_seen': device.get('last_seen'),
+            },
+            'traffic': {
+                'window': f'last {telemetry_window_hours} hours',
+                'total_flows': len(matched_flows),
+                'total_bytes': total_bytes,
+                'inbound_bytes': inbound_bytes,
+                'outbound_bytes': outbound_bytes,
+                'protocol_distribution': protocol_rows,
+                'most_used_protocols': most_used_protocols,
+                'open_ports': port_rows,
+                'open_ports_total': open_ports_total,
+            },
+            'alerts': {
+                'open_alerts': len(matched_alerts),
+                'top_signatures': top_alert_rows,
+            },
+            'data_quality': {
+                'flows_matched': len(matched_flows),
+                'alerts_matched': len(matched_alerts),
+                'incidents_matched': len(matched_incidents),
+                'open_ports_identified': len(port_rows),
+                'telemetry_window': f'{telemetry_window_hours}h',
+                'telemetry_source': telemetry_source,
+                'requested_telemetry_limit': telemetry_limit
+            },
+            'incidents': {
+                'related_total': len(matched_incidents),
+                'open_total': len(open_incidents),
+                'recent': [
+                    {
+                        'incident_id': inc.get('incident_id'),
+                        'title': inc.get('title'),
+                        'severity': inc.get('severity'),
+                        'status': inc.get('status'),
+                        'created_at': inc.get('created_at')
+                    }
+                    for inc in sorted(
+                        matched_incidents,
+                        key=lambda x: str(x.get('created_at') or ''),
+                        reverse=True
+                    )[:5]
+                ]
+            },
+            'cve': {
+                'correlation_summary': {
+                    'critical': int(corr_summary.get('critical') or 0),
+                    'high': int(corr_summary.get('high') or 0),
+                    'medium': int(corr_summary.get('medium') or 0),
+                    'low': int(corr_summary.get('low') or 0),
+                },
+                'existing_status': {
+                    'open': int(cve_status_summary.get('open') or 0),
+                    'patched': int(cve_status_summary.get('patched') or 0),
+                    'mitigated': int(cve_status_summary.get('mitigated') or 0),
+                    'false_positive': int(cve_status_summary.get('false_positive') or 0),
+                },
+                'correlated_cve_ids': corr_cve_list[:20] if isinstance(corr_cve_list, list) else [],
+                'existing_entries': cve_entries[:20] if isinstance(cve_entries, list) else []
+            },
+            'limitations': [
+                'Passive telemetry and OS/CVE correlation only.',
+                'This report does not confirm exploitation of a specific device.'
+            ]
+        }
+
+        include_llm = str(request.args.get('include_llm', '1')).lower() in ('1', 'true', 'yes')
+        llm_block = {
+            'provider': 'disabled',
+            'model': 'n/a',
+            'executive_summary': 'Quick report generated without extended LLM analysis.',
+            'key_points': [],
+            'recommended_actions': [],
+            'confidence': 0.0
+        }
+        if include_llm:
+            llm_fallback = {
+                'provider': 'fallback',
+                'model': 'heuristic-template',
+                'executive_summary': (
+                    f"Passive report for {report_payload['device'].get('hostname') or report_payload['device'].get('ip_address') or 'device'}: "
+                    "review OS/CVE correlation, observed traffic, and open alerts/incidents. "
+                    "This does not confirm exploitation."
+                ),
+                'key_points': [
+                    'No direct exploit validation is performed in this report.',
+                    'Traffic and protocol metrics depend on observed telemetry window.',
+                    'Prioritize patching based on CVE severity and business impact.'
+                ],
+                'recommended_actions': [
+                    'Verify asset exposure and open ports against baseline.',
+                    'Patch critical/high CVEs first, then medium.',
+                    'Correlate with Suricata alerts and incidents before escalation.'
+                ],
+                'confidence': 0.45
+            }
+            try:
+                llm_resp = requests.post(
+                    f"{LOG_ANALYZER_SERVICE}/reports/device-general",
+                    json=report_payload,
+                    timeout=8
+                )
+                if llm_resp.ok:
+                    llm_payload = llm_resp.json() or {}
+                    llm_block = llm_payload.get('llm_report') or llm_fallback
+                else:
+                    llm_block = llm_fallback
+            except Exception as llm_error:
+                logger.warning(f"Device general report LLM call failed: {str(llm_error)}")
+                llm_block = llm_fallback
+
+        return jsonify({
+            'status': 'ok',
+            'generated_at': datetime.utcnow().isoformat(),
+            'report': report_payload,
+            'llm_report': llm_block,
+            'figures': {
+                'protocol_distribution': report_payload['traffic']['protocol_distribution'],
+                'cve_status_distribution': report_payload['cve']['existing_status'],
+                'cve_severity_distribution': report_payload['cve']['correlation_summary'],
+            },
+            'note': 'Passive, correlation-based report. Not exploitation confirmation.'
+        })
+    except Exception as e:
+        logger.error(f"General device vulnerability report error: {str(e)}")
+        return jsonify({'error': 'Failed to generate general report'}), 500
+
 
 @app.route('/api/cve/<cve_id>', methods=['GET'])
 def get_cve_details(cve_id):
@@ -819,7 +1271,11 @@ def get_ai_agent_status():
 def get_alerts():
     """Get security alerts from traffic analyzer"""
     try:
-        response = requests.get(f"{TRAFFIC_SERVICE}/alerts", timeout=30)
+        response = requests.get(
+            f"{TRAFFIC_SERVICE}/alerts",
+            params=request.args,
+            timeout=30
+        )
         return Response(
             response.content,
             status=response.status_code,
@@ -835,7 +1291,11 @@ def get_traffic_flows():
     """Get network traffic flows"""
     try:
         # Try to get data from traffic analyzer service first
-        response = requests.get(f"{TRAFFIC_SERVICE}/traffic/flows", timeout=10)
+        response = requests.get(
+            f"{TRAFFIC_SERVICE}/traffic/flows",
+            params=request.args,
+            timeout=10
+        )
         return Response(
             response.content,
             status=response.status_code,
@@ -859,16 +1319,23 @@ def get_traffic_flows():
             conn = mysql.connector.connect(**db_config)
             cursor = conn.cursor(dictionary=True)
             
+            window_hours = request.args.get('window_hours', default=24, type=int) or 24
+            window_hours = max(1, min(window_hours, 720))
+            limit = request.args.get('limit', default=300, type=int) or 300
+            limit = max(20, min(limit, 2000))
+            cutoff_sql = datetime.utcnow() - timedelta(hours=window_hours)
+
             query = """
             SELECT flow_id, src_ip, dest_ip, src_port, dest_port, protocol,
                    bytes_to_server, bytes_to_client, packets_to_server, packets_to_client,
                    start_time, end_time, duration_seconds, state
             FROM traffic_flows
+            WHERE start_time >= %s
             ORDER BY start_time DESC
-            LIMIT 100
+            LIMIT %s
             """
             
-            cursor.execute(query)
+            cursor.execute(query, (cutoff_sql, limit))
             flows = cursor.fetchall()
             
             # Convert datetime objects to strings for JSON serialization
@@ -881,7 +1348,7 @@ def get_traffic_flows():
             cursor.close()
             conn.close()
             
-            return jsonify({'flows': flows})
+            return jsonify({'flows': flows, 'window_hours': window_hours, 'limit': limit})
             
         except Exception as db_error:
             logger.error(f"Database fallback error: {str(db_error)}")
@@ -944,7 +1411,15 @@ def handle_incidents():
 def run_incident_scan():
     """Proxy manual anomaly scan trigger to correlation engine"""
     try:
-        response = requests.post(f"{CORRELATION_SERVICE}/incidents/scan", timeout=60)
+        payload = request.get_json(silent=True)
+        request_kwargs = {
+            'params': request.args.to_dict(flat=True),
+            'timeout': 90
+        }
+        if payload is not None:
+            request_kwargs['json'] = payload
+
+        response = requests.post(f"{CORRELATION_SERVICE}/incidents/scan", **request_kwargs)
         return Response(
             response.content,
             status=response.status_code,
@@ -1234,7 +1709,7 @@ def subscribe_to_events():
     """Subscribe to real-time security events"""
     def generate():
         pubsub = redis_client.pubsub()
-        pubsub.subscribe(['security_events', 'scan_updates', 'alert_updates', 'traffic_events'])
+        pubsub.subscribe(['security_events', 'scan_updates', 'alert_updates', 'traffic_events', 'cve_updates'])
         
         try:
             for message in pubsub.listen():

@@ -12,6 +12,9 @@ import os
 import shutil
 from collections import defaultdict
 
+from shared.windows_network import detect_primary_interface, load_local_env
+
+load_local_env()
 
 
 app = Flask(__name__)
@@ -46,6 +49,12 @@ OUI_VENDOR_HINTS = {
     "f0:25:b7": ("Samsung", "Android"),
     "00:15:5d": ("Microsoft", "Windows"),  # Hyper-V / Windows host
 }
+
+
+def get_capture_interface_name():
+    preferred_interface = os.getenv("TSHARK_INTERFACE") or os.getenv("SCAN_INTERFACE")
+    network_info = detect_primary_interface(preferred_interface=preferred_interface)
+    return network_info.get("name") or preferred_interface or "Wi-Fi 2"
 
 
 @app.after_request
@@ -305,7 +314,7 @@ def capture_traffic():
     tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
     script_dir = os.path.dirname(os.path.abspath(__file__))
     pcap_path = os.path.join(script_dir, "dhcp_capture.pcap")
-    capture_interface = os.getenv("TSHARK_INTERFACE", "Wi-Fi 2")
+    capture_interface = get_capture_interface_name()
     capture_duration = int(os.getenv("TSHARK_CAPTURE_SECONDS", "0"))
     analyze_interval = int(os.getenv("TSHARK_ANALYZE_INTERVAL", "15"))
     last_analyze = 0
@@ -555,7 +564,7 @@ def stop_traffic_sampling():
 
 def _traffic_sampling_loop():
     tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
-    capture_interface = os.getenv("TSHARK_INTERFACE", "Wi-Fi 2")
+    capture_interface = get_capture_interface_name()
     sample_seconds = int(os.getenv("TSHARK_TRAFFIC_SAMPLE_SECONDS", "3"))
     sample_interval = int(os.getenv("TSHARK_TRAFFIC_SAMPLE_INTERVAL", "5"))
     ttl_seconds = int(os.getenv("TSHARK_TRAFFIC_TTL_SECONDS", "600"))

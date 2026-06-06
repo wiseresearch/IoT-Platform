@@ -2,59 +2,31 @@
 # IoT and Network Security Rules
 
 # Basic malware detection
-alert tcp any any -> any any (msg:"ET MALWARE Suspicious User Agent"; content:"User-Agent|3a| "; content:"wget"; http_header; classtype:trojan-activity; sid:2000001; rev:1;)
-alert tcp any any -> any any (msg:"ET MALWARE Suspicious PowerShell Command"; content:"powershell"; content:"-enc"; classtype:trojan-activity; sid:2000002; rev:1;)
 
 # IoT device attacks
-alert tcp any any -> any 22 (msg:"SSH Brute Force Attempt"; flags:S; threshold:type threshold, track by_src, count 10, seconds 60; classtype:attempted-admin; sid:2000003; rev:1;)
-alert tcp any any -> any 23 (msg:"Telnet Brute Force Attempt"; flags:S; threshold:type threshold, track by_src, count 5, seconds 30; classtype:attempted-admin; sid:2000004; rev:1;)
-alert tcp any any -> any 80 (msg:"IoT Default Password Login Attempt"; content:"POST"; http_method; content:"admin:admin"; http_client_body; classtype:attempted-admin; sid:2000005; rev:1;)
 
 # Network reconnaissance
-alert icmp any any -> any any (msg:"ICMP Ping Sweep"; itype:8; threshold:type threshold, track by_src, count 10, seconds 5; classtype:attempted-recon; sid:2000006; rev:1;)
-alert tcp any any -> any any (msg:"TCP Port Scan"; flags:S; threshold:type threshold, track by_src, count 20, seconds 10; classtype:attempted-recon; sid:2000007; rev:1;)
 
 # Suspicious network traffic
-alert tcp any any -> any any (msg:"Suspicious Large Upload"; dsize:>1000000; classtype:policy-violation; sid:2000008; rev:1;)
-alert tcp any any -> any any (msg:"Base64 Encoded Data Transfer"; content:"base64"; classtype:policy-violation; sid:2000009; rev:1;)
 
 # DNS security
-alert udp any any -> any 53 (msg:"DNS Tunneling Attempt"; content:"|00 01 00 00 00 01|"; content:"|00 00 01 00 01|"; distance:0; classtype:policy-violation; sid:2000010; rev:1;)
-alert tcp any any -> any 53 (msg:"Suspicious DNS over TCP"; classtype:policy-violation; sid:2000011; rev:1;)
 
 # HTTP security
-alert http any any -> any any (msg:"SQL Injection Attempt"; content:"union"; content:"select"; classtype:web-application-attack; sid:2000012; rev:1;)
-alert http any any -> any any (msg:"XSS Attack Attempt"; content:"<script"; classtype:web-application-attack; sid:2000013; rev:1;)
-alert http any any -> any any (msg:"Directory Traversal Attempt"; content:"../"; classtype:web-application-attack; sid:2000014; rev:1;)
 
 # Industrial protocol security
-alert tcp any any -> any 502 (msg:"Modbus Unauthorized Access"; classtype:protocol-command-decode; sid:2000015; rev:1;)
-alert tcp any any -> any 44818 (msg:"EtherNet/IP Unauthorized Access"; classtype:protocol-command-decode; sid:2000016; rev:1;)
 
 # Lateral movement detection
-alert tcp any any -> any 445 (msg:"SMB Lateral Movement"; content:"|ff|SMB"; classtype:trojan-activity; sid:2000017; rev:1;)
-alert tcp any any -> any 135 (msg:"RPC Lateral Movement"; classtype:trojan-activity; sid:2000018; rev:1;)
 
 # Data exfiltration
-alert tcp any any -> any any (msg:"Large Outbound Transfer"; dsize:>5000000; classtype:policy-violation; sid:2000019; rev:1;)
-alert tcp any any -> any any (msg:"Suspicious FTP Upload"; content:"STOR"; content:".zip"; classtype:policy-violation; sid:2000020; rev:1;)
 
 # Cryptocurrency mining
-alert tcp any any -> any any (msg:"Cryptocurrency Mining Pool Connection"; content:"stratum+tcp"; classtype:coin-mining; sid:2000021; rev:1;)
-alert tcp any any -> any any (msg:"Suspicious Mining Traffic"; content:"mining.pool"; classtype:coin-mining; sid:2000022; rev:1;)
 
 # Command and Control
-alert tcp any any -> any any (msg:"Suspicious C2 Beacon"; content:"GET"; http_method; content:"/beacon"; http_uri; classtype:trojan-activity; sid:2000023; rev:1;)
-alert tcp any any -> any any (msg:"Suspicious HTTP User Agent"; content:"User-Agent: Bot"; http_header; classtype:trojan-activity; sid:2000024; rev:1;)
 
 # IoT specific vulnerabilities
-alert tcp any any -> any 80 (msg:"IoT Default Web Interface Access"; content:"GET"; http_method; content:"/cgi-bin/"; http_uri; classtype:web-application-activity; sid:2000025; rev:1;)
-alert udp any any -> any 1900 (msg:"UPnP Exploitation Attempt"; content:"M-SEARCH"; classtype:attempted-admin; sid:2000026; rev:1;)
 
 # Network anomalies
-alert tcp any any -> any any (msg:"Abnormal TCP Window Size"; window:0; classtype:protocol-command-decode; sid:2000027; rev:1;)
-alert tcp any any -> any any (msg:"TCP Reset Flood"; flags:R; threshold:type threshold, track by_src, count 100, seconds 10; classtype:attempted-dos; sid:2000028; rev:1;)
 
 # Firmware update security
-alert tcp any any -> any 80 (msg:"Suspicious Firmware Update"; content:"firmware"; http_uri; content:"upload"; http_uri; classtype:policy-violation; sid:2000029; rev:1;)
-alert tcp any any -> any 443 (msg:"Unauthorized HTTPS Firmware Update"; content:"firmware"; http_uri; classtype:policy-violation; sid:2000030; rev:1;)
+alert icmp any any -> $HOME_NET any (msg:"ICMP echo request detected"; itype:8; classtype:misc-activity; priority:3; sid:9566901; rev:1;)
+alert icmp any any -> $HOME_NET any (msg:"ICMP echo request detected"; itype:8; classtype:misc-activity; priority:3; sid:9597613; rev:1;)

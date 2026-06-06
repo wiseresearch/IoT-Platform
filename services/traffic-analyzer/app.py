@@ -5,7 +5,7 @@ import redis
 import json
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import threading
 import grpc
 from concurrent import futures
@@ -615,17 +615,40 @@ def health_check():
 def get_alerts():
     """Get security alerts"""
     try:
-        query = """
-        SELECT alert_id, signature, severity, src_ip, dest_ip, src_port, dest_port,
-               protocol, timestamp, status, acknowledged
-        FROM security_alerts
-        WHERE status = 'open'
-        ORDER BY timestamp DESC
-        LIMIT 100
-        """
-        
-        alerts = db.execute_query(query, fetch=True)
-        return jsonify({'alerts': alerts})
+        window_hours = request.args.get('window_hours', default=24, type=int) or 24
+        window_hours = max(1, min(window_hours, 720))
+        limit = request.args.get('limit', default=300, type=int) or 300
+        limit = max(20, min(limit, 2000))
+        include_closed = str(request.args.get('include_closed', '0')).lower() in ('1', 'true', 'yes')
+        cutoff_time = datetime.utcnow() - timedelta(hours=window_hours)
+
+        if include_closed:
+            query = """
+            SELECT alert_id, signature, severity, src_ip, dest_ip, src_port, dest_port,
+                   protocol, timestamp, status, acknowledged
+            FROM security_alerts
+            WHERE timestamp >= %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """
+            alerts = db.execute_query(query, (cutoff_time, limit), fetch=True)
+        else:
+            query = """
+            SELECT alert_id, signature, severity, src_ip, dest_ip, src_port, dest_port,
+                   protocol, timestamp, status, acknowledged
+            FROM security_alerts
+            WHERE status = 'open' AND timestamp >= %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+            """
+            alerts = db.execute_query(query, (cutoff_time, limit), fetch=True)
+
+        return jsonify({
+            'alerts': alerts,
+            'window_hours': window_hours,
+            'limit': limit,
+            'include_closed': include_closed
+        })
         
     except Exception as e:
         logger.error(f"Error fetching alerts: {str(e)}")
@@ -635,19 +658,28 @@ def get_alerts():
 def get_traffic_flows():
     """Get network traffic flows"""
     try:
+        window_hours = request.args.get('window_hours', default=1, type=int) or 1
+        window_hours = max(1, min(window_hours, 720))
+        limit = request.args.get('limit', default=100, type=int) or 100
+        limit = max(20, min(limit, 2000))
+        cutoff_time = datetime.utcnow() - timedelta(hours=window_hours)
+
         query = """
         SELECT flow_id, src_ip, dest_ip, src_port, dest_port, protocol,
                bytes_to_server, bytes_to_client, packets_to_server, packets_to_client,
                start_time, end_time, duration_seconds, state
         FROM traffic_flows
-        WHERE start_time >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        WHERE start_time >= %s
         ORDER BY start_time DESC
-        LIMIT 100
+        LIMIT %s
         """
         
-        flows = db.execute_query(query, fetch=True)
-        return jsonify({'flows': flows})
-        return jsonify({'flows': flows})
+        flows = db.execute_query(query, (cutoff_time, limit), fetch=True)
+        return jsonify({
+            'flows': flows,
+            'window_hours': window_hours,
+            'limit': limit
+        })
         
     except Exception as e:
         logger.error(f"Error fetching traffic flows: {str(e)}")

@@ -101,6 +101,7 @@ services:
       - DB_USER=${DB_USER:-security_user}
       - DB_PASS=${DB_PASS:-change_me_db_password}
       - DB_NAME=${DB_NAME:-unified_security}
+      - FALLBACK_SUBNET=${FALLBACK_SUBNET:-192.168.1.0/24}
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -140,6 +141,7 @@ services:
       - DB_USER=${DB_USER:-security_user}
       - DB_PASS=${DB_PASS:-change_me_db_password}
       - DB_NAME=${DB_NAME:-unified_security}
+      - FALLBACK_SUBNET=${FALLBACK_SUBNET:-192.168.1.0/24}
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1

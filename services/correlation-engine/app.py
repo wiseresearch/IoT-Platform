@@ -7,6 +7,8 @@ import os
 import logging
 import re
 import unicodedata
+import ipaddress
+import uuid
 from datetime import datetime, timedelta
 import threading
 import time
@@ -587,97 +589,409 @@ class CorrelationEngine:
                 logger.error(f"Daily scan scheduler error: {str(e)}")
                 time.sleep(300)
 
-    def run_daily_anomaly_scan(self, triggered_by='scheduler'):
-        """Daily anomaly scan for any device ever connected."""
+    def _generate_incident_id(self):
+        return f"INC-{uuid.uuid4().hex[:12].upper()}"
+
+    def _json_default(self, value):
+        if hasattr(value, 'isoformat'):
+            try:
+                return value.isoformat()
+            except Exception:
+                pass
+        return str(value)
+
+    def _serialize_json(self, value):
+        return json.dumps(value if value is not None else [], default=self._json_default)
+
+    def _decode_json_value(self, value, default):
+        if value is None:
+            return default
+        if isinstance(value, type(default)):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, type(default)):
+                    return parsed
+            except Exception:
+                return default
+        return default
+
+    def _parse_datetime(self, value):
+        if not value:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            candidate = value.strip().replace('Z', '')
+            for fmt in (
+                '%Y-%m-%d %H:%M:%S.%f',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%dT%H:%M:%S.%f',
+                '%Y-%m-%dT%H:%M:%S'
+            ):
+                try:
+                    return datetime.strptime(candidate, fmt)
+                except ValueError:
+                    continue
+        return None
+
+    def _hours_since(self, value):
+        parsed = self._parse_datetime(value)
+        if not parsed:
+            return None
+        return max((datetime.utcnow() - parsed).total_seconds() / 3600, 0)
+
+    def _is_actionable_device_ip(self, ip_address_value):
+        if not ip_address_value:
+            return False
+        try:
+            parsed = ipaddress.ip_address(str(ip_address_value).strip())
+        except ValueError:
+            return False
+        return not (
+            parsed.is_loopback
+            or parsed.is_multicast
+            or parsed.is_unspecified
+            or parsed.is_link_local
+            or parsed.is_reserved
+        )
+
+    def _load_device_risk_snapshot(self, device, window_hours):
+        device_id = device.get('id')
+        ip_address_value = device.get('ip_address')
+
+        vulnerability_count_query = """
+        SELECT COALESCE(v.severity, 'low') as severity, COUNT(*) as count
+        FROM device_vulnerabilities dv
+        JOIN vulnerabilities v ON v.id = dv.vulnerability_id
+        WHERE dv.device_id = %s AND dv.status = 'open'
+        GROUP BY COALESCE(v.severity, 'low')
+        """
+        vulnerability_count_rows = db.execute_query(vulnerability_count_query, (device_id,), fetch=True) or []
+        vulnerability_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        for row in vulnerability_count_rows:
+            severity = row.get('severity')
+            if severity in vulnerability_counts:
+                vulnerability_counts[severity] = int(row.get('count') or 0)
+
+        vulnerability_query = """
+        SELECT v.cve_id, COALESCE(v.severity, 'low') as severity, v.cvss_score, v.summary, dv.detected_at
+        FROM device_vulnerabilities dv
+        JOIN vulnerabilities v ON v.id = dv.vulnerability_id
+        WHERE dv.device_id = %s AND dv.status = 'open'
+        ORDER BY FIELD(v.severity, 'critical', 'high', 'medium', 'low'), v.cvss_score DESC, dv.detected_at DESC
+        LIMIT 10
+        """
+        vulnerabilities = db.execute_query(vulnerability_query, (device_id,), fetch=True) or []
+
+        ports_query = """
+        SELECT port_number, protocol, service_name, service_version, state
+        FROM device_ports
+        WHERE device_id = %s AND state = 'open'
+        ORDER BY port_number ASC
+        LIMIT 25
+        """
+        open_ports = db.execute_query(ports_query, (device_id,), fetch=True) or []
+
+        alert_count_query = """
+        SELECT severity, COUNT(*) as count
+        FROM security_alerts
+        WHERE (src_ip = %s OR dest_ip = %s)
+        AND status IN ('open', 'investigating')
+        AND timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        GROUP BY severity
+        """
+        alert_count_rows = db.execute_query(alert_count_query, (ip_address_value, ip_address_value, window_hours), fetch=True) or []
+        alert_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+        for row in alert_count_rows:
+            severity = row.get('severity')
+            if severity in alert_counts:
+                alert_counts[severity] = int(row.get('count') or 0)
+
+        recent_alerts_query = """
+        SELECT alert_id, signature, severity, category, src_ip, dest_ip, src_port, dest_port, protocol, timestamp, status
+        FROM security_alerts
+        WHERE (src_ip = %s OR dest_ip = %s)
+        AND status IN ('open', 'investigating')
+        AND timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        ORDER BY timestamp DESC
+        LIMIT 20
+        """
+        recent_alerts = db.execute_query(recent_alerts_query, (ip_address_value, ip_address_value, window_hours), fetch=True) or []
+
+        flow_query = """
+        SELECT COUNT(*) as flow_count,
+               COUNT(DISTINCT CASE WHEN src_ip = %s THEN dest_ip ELSE src_ip END) as peer_count,
+               COALESCE(SUM(COALESCE(bytes_to_server, 0) + COALESCE(bytes_to_client, 0)), 0) as total_bytes,
+               MAX(COALESCE(end_time, start_time)) as last_flow_at
+        FROM traffic_flows
+        WHERE (src_ip = %s OR dest_ip = %s)
+        AND COALESCE(end_time, start_time) >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        """
+        flow_summary_rows = db.execute_query(flow_query, (ip_address_value, ip_address_value, ip_address_value, window_hours), fetch=True) or [{}]
+        flow_summary = flow_summary_rows[0] if flow_summary_rows else {}
+
+        threat_query = """
+        SELECT ti.indicator, ti.threat_type, ti.confidence, COUNT(*) as matches,
+               MAX(COALESCE(tf.end_time, tf.start_time)) as last_seen
+        FROM traffic_flows tf
+        JOIN threat_intelligence ti
+          ON ti.is_active = TRUE
+         AND ti.indicator_type = 'ip'
+         AND (tf.src_ip = ti.indicator OR tf.dest_ip = ti.indicator)
+        WHERE (tf.src_ip = %s OR tf.dest_ip = %s)
+        AND COALESCE(tf.end_time, tf.start_time) >= DATE_SUB(NOW(), INTERVAL %s HOUR)
+        GROUP BY ti.indicator, ti.threat_type, ti.confidence
+        ORDER BY matches DESC, ti.confidence DESC
+        LIMIT 10
+        """
+        threat_hits = db.execute_query(threat_query, (ip_address_value, ip_address_value, window_hours), fetch=True) or []
+        threat_match_count = sum(int(item.get('matches') or 0) for item in threat_hits)
+        max_threat_confidence = max((float(item.get('confidence') or 0) for item in threat_hits), default=0.0)
+
+        return {
+            'device': device,
+            'window_hours': window_hours,
+            'hours_since_seen': self._hours_since(device.get('last_seen')),
+            'hours_since_first_seen': self._hours_since(device.get('first_seen')),
+            'vulnerability_counts': vulnerability_counts,
+            'vulnerabilities': vulnerabilities,
+            'open_ports': open_ports,
+            'alert_counts': alert_counts,
+            'recent_alerts': recent_alerts,
+            'flow_summary': flow_summary,
+            'threat_hits': threat_hits,
+            'threat_match_count': threat_match_count,
+            'max_threat_confidence': max_threat_confidence
+        }
+
+    def _score_device_risk(self, snapshot):
+        vulnerability_counts = snapshot.get('vulnerability_counts', {})
+        alert_counts = snapshot.get('alert_counts', {})
+        open_ports = snapshot.get('open_ports', [])
+        flow_summary = snapshot.get('flow_summary', {})
+        threat_match_count = int(snapshot.get('threat_match_count') or 0)
+        max_threat_confidence = float(snapshot.get('max_threat_confidence') or 0)
+        hours_since_seen = snapshot.get('hours_since_seen')
+        hours_since_first_seen = snapshot.get('hours_since_first_seen')
+
+        total_open_vulnerabilities = sum(int(v or 0) for v in vulnerability_counts.values())
+        total_alerts = sum(int(v or 0) for v in alert_counts.values())
+        open_port_count = len(open_ports)
+        flow_count = int(flow_summary.get('flow_count') or 0)
+        peer_count = int(flow_summary.get('peer_count') or 0)
+        total_bytes = int(flow_summary.get('total_bytes') or 0)
+        has_recent_telemetry = total_alerts > 0 or flow_count > 0
+
+        score = 0
+        reasons = []
+
+        def add_points(points, reason):
+            nonlocal score
+            if points <= 0:
+                return
+            score += points
+            reasons.append(reason)
+
+        critical_vulns = int(vulnerability_counts.get('critical') or 0)
+        high_vulns = int(vulnerability_counts.get('high') or 0)
+        medium_vulns = int(vulnerability_counts.get('medium') or 0)
+        low_vulns = int(vulnerability_counts.get('low') or 0)
+
+        add_points(min(critical_vulns * 45, 135), f"{critical_vulns} critical open vulnerabilities") if critical_vulns else None
+        add_points(min(high_vulns * 25, 100), f"{high_vulns} high open vulnerabilities") if high_vulns else None
+        add_points(min(medium_vulns * 12, 60), f"{medium_vulns} medium open vulnerabilities") if medium_vulns else None
+        add_points(min(low_vulns * 4, 20), f"{low_vulns} low open vulnerabilities") if low_vulns else None
+
+        sensitive_ports = {21, 22, 23, 53, 80, 110, 139, 143, 161, 389, 443, 445, 502, 1883, 1900, 3389, 5353, 7547, 8080, 8443}
+        sensitive_port_count = sum(1 for port in open_ports if int(port.get('port_number') or 0) in sensitive_ports)
+        add_points(min(open_port_count * 2, 10), f"{open_port_count} exposed open ports") if open_port_count else None
+        add_points(min(sensitive_port_count * 3, 15), f"{sensitive_port_count} sensitive services exposed") if sensitive_port_count else None
+
+        critical_alerts = int(alert_counts.get('critical') or 0)
+        high_alerts = int(alert_counts.get('high') or 0)
+        medium_alerts = int(alert_counts.get('medium') or 0)
+        low_alerts = int(alert_counts.get('low') or 0)
+
+        add_points(min(critical_alerts * 50, 150), f"{critical_alerts} critical active alerts") if critical_alerts else None
+        add_points(min(high_alerts * 28, 112), f"{high_alerts} high active alerts") if high_alerts else None
+        add_points(min(medium_alerts * 12, 60), f"{medium_alerts} medium active alerts") if medium_alerts else None
+        add_points(min(low_alerts * 3, 24), f"{low_alerts} low active alerts") if low_alerts else None
+
+        if medium_alerts >= self.daily_scan_medium_threshold:
+            add_points(8, f"medium alert volume crossed threshold ({self.daily_scan_medium_threshold}+)")
+        if total_alerts >= self.daily_scan_low_threshold:
+            add_points(12, f"overall alert volume crossed threshold ({self.daily_scan_low_threshold}+)")
+
+        add_points(min(threat_match_count * 45, 135), f"{threat_match_count} threat-intelligence traffic matches") if threat_match_count else None
+        if threat_match_count and max_threat_confidence >= 0.85:
+            add_points(10, f"high-confidence threat intelligence hit ({max_threat_confidence:.2f})")
+
+        if flow_count >= 10:
+            add_points(6, f"{flow_count} recent network flows observed")
+        if flow_count >= 50:
+            add_points(6, f"{flow_count} flows indicate sustained activity")
+        if peer_count >= 5:
+            add_points(4, f"{peer_count} recent peers contacted")
+        if peer_count >= 15:
+            add_points(6, f"{peer_count} peers contacted across the window")
+        if total_bytes >= 10 * 1024 * 1024:
+            add_points(4, "meaningful data volume observed in recent flows")
+
+        if hours_since_first_seen is not None and hours_since_first_seen <= 24:
+            add_points(4, "device first appeared in the last 24 hours")
+        if hours_since_seen is not None:
+            if hours_since_seen <= 6:
+                add_points(8, "device seen within the last 6 hours")
+            elif hours_since_seen <= 24:
+                add_points(5, "device seen within the last 24 hours")
+            elif hours_since_seen <= 72:
+                add_points(2, "device seen within the last 72 hours")
+
+        if not has_recent_telemetry:
+            if hours_since_seen is None or hours_since_seen > snapshot.get('window_hours', self.daily_scan_window_hours) * 2:
+                score -= 20
+                reasons.append("no recent telemetry in the analysis window")
+            elif hours_since_seen and hours_since_seen > snapshot.get('window_hours', self.daily_scan_window_hours):
+                score -= 10
+                reasons.append("stale device activity compared with the scan window")
+
+        score = max(score, 0)
+        recent_exposure = total_open_vulnerabilities > 0 and open_port_count > 0 and (
+            has_recent_telemetry or (hours_since_seen is not None and hours_since_seen <= 72)
+        )
+
+        severity = None
+        if score >= 130 or (threat_match_count > 0 and (critical_alerts > 0 or critical_vulns > 0)):
+            severity = 'critical'
+        elif score >= 85 or threat_match_count > 0 or critical_alerts > 0 or critical_vulns > 0 or high_alerts > 0 or high_vulns > 0:
+            severity = 'high'
+        elif score >= 45 or medium_alerts > 0 or recent_exposure:
+            severity = 'medium'
+        elif score >= 25:
+            severity = 'low'
+
+        should_create = severity is not None and (
+            total_alerts > 0 or total_open_vulnerabilities > 0 or threat_match_count > 0
+        )
+
+        return {
+            'score': score,
+            'severity': severity,
+            'should_create': should_create,
+            'reasons': reasons,
+            'has_recent_telemetry': has_recent_telemetry,
+            'total_open_vulnerabilities': total_open_vulnerabilities,
+            'total_alerts': total_alerts,
+            'open_port_count': open_port_count,
+            'sensitive_port_count': sensitive_port_count,
+            'flow_count': flow_count,
+            'peer_count': peer_count,
+            'total_bytes': total_bytes,
+            'threat_match_count': threat_match_count
+        }
+
+    def run_daily_anomaly_scan(self, triggered_by='scheduler', window_hours=None):
+        """Daily risk scan that combines exposure, telemetry, and active alerts."""
         created = 0
+        updated = 0
         scanned = 0
-        window_hours = self.daily_scan_window_hours
+        skipped = 0
+        window_hours = max(1, min(int(window_hours or self.daily_scan_window_hours), 720))
 
         device_query = """
-        SELECT id, ip_address, mac_address, hostname, last_seen
+        SELECT id, ip_address, mac_address, hostname, first_seen, last_seen, status, risk_level
         FROM devices
         WHERE ip_address IS NOT NULL AND ip_address != ''
         """
         devices = db.execute_query(device_query, fetch=True) or []
 
         for device in devices:
-            ip = device.get('ip_address')
-            if not ip:
+            ip_address_value = (device.get('ip_address') or '').strip()
+            if not self._is_actionable_device_ip(ip_address_value):
+                skipped += 1
                 continue
+
             scanned += 1
 
-            alert_query = """
-            SELECT severity, COUNT(*) as count
-            FROM security_alerts
-            WHERE (src_ip = %s OR dest_ip = %s)
-            AND timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
-            GROUP BY severity
-            """
-            severity_rows = db.execute_query(alert_query, (ip, ip, window_hours), fetch=True) or []
-            if not severity_rows:
-                continue
+            try:
+                snapshot = self._load_device_risk_snapshot(device, window_hours)
+                assessment = self._score_device_risk(snapshot)
+                if not assessment.get('should_create'):
+                    continue
 
-            counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
-            total_alerts = 0
-            for row in severity_rows:
-                sev = row.get('severity')
-                cnt = int(row.get('count') or 0)
-                if sev in counts:
-                    counts[sev] = cnt
-                total_alerts += cnt
+                title = f"Daily Security Incident Scan {datetime.utcnow().strftime('%Y-%m-%d')} - {ip_address_value}"
+                summary_parts = []
+                if assessment['total_open_vulnerabilities']:
+                    summary_parts.append(f"{assessment['total_open_vulnerabilities']} open vulnerabilities")
+                if assessment['open_port_count']:
+                    summary_parts.append(f"{assessment['open_port_count']} exposed ports")
+                if assessment['total_alerts']:
+                    summary_parts.append(f"{assessment['total_alerts']} active alerts")
+                if assessment['threat_match_count']:
+                    summary_parts.append(f"{assessment['threat_match_count']} threat-intel matches")
+                if assessment['flow_count']:
+                    summary_parts.append(f"{assessment['flow_count']} recent flows")
 
-            severity = 'low'
-            if counts['critical'] > 0:
-                severity = 'critical'
-            elif counts['high'] > 0:
-                severity = 'high'
-            elif counts['medium'] >= self.daily_scan_medium_threshold:
-                severity = 'medium'
-            elif total_alerts >= self.daily_scan_low_threshold:
-                severity = 'low'
-            else:
-                continue
+                description = (
+                    f"Daily security incident scan assigned risk score {assessment['score']} to device "
+                    f"{ip_address_value} over the last {window_hours}h. Signals: "
+                    f"{', '.join(summary_parts) if summary_parts else 'no summarized signals'}. "
+                    f"Drivers: {'; '.join(assessment['reasons'][:4])}."
+                )
 
-            title = f"Daily Anomaly Scan {datetime.utcnow().strftime('%Y-%m-%d')} - {ip}"
-            exists_query = """
-            SELECT id FROM security_incidents
-            WHERE title = %s AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            LIMIT 1
-            """
-            existing = db.execute_query(exists_query, (title,), fetch=True)
-            if existing:
-                continue
+                existing_query = """
+                SELECT incident_id, timeline
+                FROM security_incidents
+                WHERE title = %s AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+                existing_rows = db.execute_query(existing_query, (title,), fetch=True) or []
+                existing_incident = existing_rows[0] if existing_rows else None
 
-            recent_alerts_query = """
-            SELECT alert_id, signature, severity, src_ip, dest_ip, timestamp
-            FROM security_alerts
-            WHERE (src_ip = %s OR dest_ip = %s)
-            AND timestamp >= DATE_SUB(NOW(), INTERVAL %s HOUR)
-            ORDER BY timestamp DESC
-            LIMIT 20
-            """
-            alerts = db.execute_query(recent_alerts_query, (ip, ip, window_hours), fetch=True) or []
+                incident_data = {
+                    'title': title,
+                    'description': description,
+                    'severity': assessment['severity'],
+                    'device': {
+                        'device_id': device.get('id'),
+                        'ip_address': ip_address_value,
+                        'mac_address': device.get('mac_address'),
+                        'hostname': device.get('hostname'),
+                        'first_seen': device.get('first_seen'),
+                        'last_seen': device.get('last_seen'),
+                        'status': device.get('status'),
+                        'risk_level': device.get('risk_level'),
+                        'risk_score': assessment['score'],
+                        'risk_reasons': assessment['reasons'][:6],
+                        'open_ports': snapshot.get('open_ports', [])[:15],
+                        'threat_hits': snapshot.get('threat_hits', [])[:5],
+                        'flow_summary': snapshot.get('flow_summary', {}),
+                        'window_hours': window_hours
+                    },
+                    'alerts': snapshot.get('recent_alerts', []),
+                    'vulnerabilities': snapshot.get('vulnerabilities', []),
+                    'rule_id': None,
+                    'risk_score': assessment['score'],
+                    'triggered_by': triggered_by
+                }
 
-            incident_data = {
-                'title': title,
-                'description': f"Daily anomaly scan detected {total_alerts} alerts for device {ip} in the last {window_hours}h.",
-                'severity': severity,
-                'device': {
-                    'ip_address': ip,
-                    'mac_address': device.get('mac_address'),
-                    'hostname': device.get('hostname'),
-                    'last_seen': device.get('last_seen')
-                },
-                'alerts': alerts,
-                'rule_id': None
-            }
-            self.create_security_incident(incident_data)
-            created += 1
+                incident_result = self.create_security_incident(incident_data, existing_incident=existing_incident)
+                if incident_result.get('created'):
+                    created += 1
+                elif incident_result.get('updated'):
+                    updated += 1
+            except Exception as e:
+                logger.error(f"Daily scan failed for device {ip_address_value}: {str(e)}")
 
         return {
             'status': 'ok',
             'scanned_devices': scanned,
+            'skipped_devices': skipped,
             'incidents_created': created,
+            'incidents_updated': updated,
             'window_hours': window_hours,
             'triggered_by': triggered_by
         }
@@ -961,52 +1275,95 @@ class CorrelationEngine:
 
         except Exception as e:
             logger.error(f"Behavioral analysis correlation error: {str(e)}")
-    def create_security_incident(self, incident_data):
-        """Create a new security incident"""
+
+    def create_security_incident(self, incident_data, existing_incident=None):
+        """Create or refresh a security incident."""
         try:
-            incident_id = f"INC-{int(time.time())}"
-            
-            query = """
-            INSERT INTO security_incidents (incident_id, title, description, severity,
-                                          status, affected_devices, related_alerts,
-                                          related_vulnerabilities, timeline)
-            VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)
-            """
-            
-            timeline = [{
-                'timestamp': datetime.utcnow().isoformat(),
-                'event': 'Incident created by correlation engine',
-                'rule_id': incident_data.get('rule_id')
-            }]
-            
-            params = (
-                incident_id,
-                incident_data['title'],
-                incident_data['description'],
-                incident_data['severity'],
-                json.dumps(incident_data.get('device', {})),
-                json.dumps(incident_data.get('alerts', [])),
-                json.dumps(incident_data.get('vulnerabilities', [])),
-                json.dumps(timeline)
+            severity = incident_data.get('severity', 'medium')
+            if severity not in SEVERITY_RANK:
+                severity = 'medium'
+
+            timeline = self._decode_json_value(
+                existing_incident.get('timeline') if existing_incident else None,
+                []
             )
-            
-            db.execute_query(query, params)
-            
-            # Publish incident event
+            timeline.append({
+                'timestamp': datetime.utcnow().isoformat(),
+                'event': (
+                    'Incident refreshed by correlation engine'
+                    if existing_incident else
+                    'Incident created by correlation engine'
+                ),
+                'rule_id': incident_data.get('rule_id'),
+                'risk_score': incident_data.get('risk_score'),
+                'triggered_by': incident_data.get('triggered_by')
+            })
+
+            if existing_incident and existing_incident.get('incident_id'):
+                incident_id = existing_incident['incident_id']
+                query = """
+                UPDATE security_incidents
+                SET title = %s,
+                    description = %s,
+                    severity = %s,
+                    status = 'open',
+                    affected_devices = %s,
+                    related_alerts = %s,
+                    related_vulnerabilities = %s,
+                    timeline = %s,
+                    closed_at = NULL
+                WHERE incident_id = %s
+                """
+                params = (
+                    incident_data['title'],
+                    incident_data['description'],
+                    severity,
+                    self._serialize_json(incident_data.get('device', {})),
+                    self._serialize_json(incident_data.get('alerts', [])),
+                    self._serialize_json(incident_data.get('vulnerabilities', [])),
+                    self._serialize_json(timeline),
+                    incident_id
+                )
+                db.execute_query(query, params)
+                event_type = 'incident_updated'
+                result = {'incident_id': incident_id, 'created': False, 'updated': True}
+                logger.info(f"Updated security incident: {incident_id}")
+            else:
+                incident_id = self._generate_incident_id()
+                query = """
+                INSERT INTO security_incidents (incident_id, title, description, severity,
+                                              status, affected_devices, related_alerts,
+                                              related_vulnerabilities, timeline)
+                VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)
+                """
+                params = (
+                    incident_id,
+                    incident_data['title'],
+                    incident_data['description'],
+                    severity,
+                    self._serialize_json(incident_data.get('device', {})),
+                    self._serialize_json(incident_data.get('alerts', [])),
+                    self._serialize_json(incident_data.get('vulnerabilities', [])),
+                    self._serialize_json(timeline)
+                )
+                db.execute_query(query, params)
+                event_type = 'new_incident'
+                result = {'incident_id': incident_id, 'created': True, 'updated': False}
+                logger.info(f"Created security incident: {incident_id}")
+
             redis_client.publish('security_events', json.dumps({
-                'type': 'new_incident',
+                'type': event_type,
                 'incident_id': incident_id,
-                'severity': incident_data['severity'],
+                'severity': severity,
                 'title': incident_data['title']
             }))
-            
-            logger.info(f"Created security incident: {incident_id}")
-            
-            # Update rule statistics
+
             self.update_rule_stats(incident_data.get('rule_id'))
-            
+            return result
+
         except Exception as e:
             logger.error(f"Error creating security incident: {str(e)}")
+            return {'created': False, 'updated': False, 'error': str(e)}
     
     def update_rule_stats(self, rule_id):
         """Update correlation rule statistics"""
@@ -1076,7 +1433,10 @@ def handle_incidents():
     elif request.method == 'POST':
         try:
             data = get_request_payload()
-            incident_id = f"INC-{int(time.time())}"
+            incident_id = correlation_engine._generate_incident_id()
+            severity = data.get('severity', 'medium')
+            if severity not in SEVERITY_RANK:
+                severity = 'medium'
 
             query = """
             INSERT INTO security_incidents (incident_id, title, description, severity,
@@ -1088,7 +1448,7 @@ def handle_incidents():
                 incident_id,
                 data.get('title', ''),
                 data.get('description', ''),
-                data.get('severity', 'medium'),
+                severity,
                 data.get('created_by', 'system')
             )
 
@@ -1102,6 +1462,27 @@ def handle_incidents():
         except Exception as e:
             logger.error(f"Error creating incident: {str(e)}")
             return jsonify({'error': 'Failed to create incident'}), 500
+
+
+@app.route('/incidents/scan', methods=['POST'])
+def run_incident_scan():
+    """Run a manual incident scan using the current risk scoring model."""
+    try:
+        data = get_request_payload()
+        requested_window = data.get('window_hours', request.args.get('window_hours'))
+        window_hours = correlation_engine.daily_scan_window_hours
+        if requested_window not in (None, ''):
+            window_hours = max(1, min(int(requested_window), 720))
+
+        result = correlation_engine.run_daily_anomaly_scan(
+            triggered_by=data.get('triggered_by', 'manual'),
+            window_hours=window_hours
+        )
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error running incident scan: {str(e)}")
+        return jsonify({'error': 'Failed to run incident scan'}), 500
 
 
 @app.route('/rules', methods=['GET', 'POST'])
@@ -1263,10 +1644,10 @@ def get_incident_dashboard():
         query = """
         SELECT 
             COUNT(*) as total_incidents,
-            SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_incidents,
-            SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) as critical_incidents,
-            SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END) as high_incidents,
-            SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END) as incidents_24h
+            COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) as open_incidents,
+            COALESCE(SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END), 0) as critical_incidents,
+            COALESCE(SUM(CASE WHEN severity = 'high' THEN 1 ELSE 0 END), 0) as high_incidents,
+            COALESCE(SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END), 0) as incidents_24h
         FROM security_incidents
         """
         
