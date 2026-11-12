@@ -1526,13 +1526,6 @@ def analyze_logs():
     return jsonify(report)
 
 
-@app.route("/logs/analysis/latest", methods=["GET"])
-def latest_analysis():
-    if not last_report:
-        return jsonify({"status": "empty", "message": "No analysis available yet"}), 404
-    return jsonify(last_report)
-
-
 @app.route("/suricata/translate-rule", methods=["POST"])
 def translate_suricata_rule():
     data = request.get_json(silent=True) or {}
@@ -1559,66 +1552,6 @@ def translate_suricata_rule():
         "used_fallback": bool(translated.get("used_fallback", False)),
         "explanation": translated.get("explanation", ""),
         "note": "Generated rule should be reviewed before deployment.",
-    })
-
-
-@app.route("/agent/train", methods=["POST"])
-def agent_train():
-    data = request.get_json(silent=True) or {}
-    window_hours = int(data.get("window_hours") or 72)
-    max_events = int(data.get("max_events") or MAX_EVENTS)
-    window_hours = max(1, min(window_hours, 336))
-    max_events = max(200, min(max_events, MAX_EVENTS))
-
-    events = elastic_fetch_events(window_hours, max_events)
-    if not events:
-        events = fetch_live_logs(max_events)
-    actions = segment_actions(events)
-    result = train_svm(actions)
-    return jsonify({
-        "status": "ok",
-        "train_result": result,
-        "window_hours": window_hours,
-        "actions_used": len(actions),
-    })
-
-
-@app.route("/agent/run", methods=["POST"])
-def agent_run():
-    global last_agent_report, last_report
-    data = request.get_json(silent=True) or {}
-    window_hours = int(data.get("window_hours") or DEFAULT_WINDOW_HOURS)
-    max_events = int(data.get("max_events") or MAX_EVENTS)
-    auto_create_incident = bool(data.get("auto_create_incident", False))
-    window_hours = max(1, min(window_hours, 168))
-    max_events = max(100, min(max_events, MAX_EVENTS))
-
-    report = run_agent_workflow(
-        window_hours=window_hours,
-        max_events=max_events,
-        auto_create_incident=auto_create_incident,
-    )
-    last_agent_report = report
-    last_report = report
-    return jsonify(report)
-
-
-@app.route("/agent/status", methods=["GET"])
-def agent_status():
-    bundle = load_model_bundle()
-    return jsonify({
-        "status": "ok",
-        "sklearn_available": SKLEARN_AVAILABLE,
-        "model_trained": bool(bundle),
-        "model_info": {
-            "trained_at": bundle.get("trained_at") if bundle else None,
-            "samples": bundle.get("samples") if bundle else 0,
-            "engine": bundle.get("engine") if bundle else None,
-            "features": bundle.get("features") if bundle else FEATURE_NAMES,
-            "path": str(MODEL_PATH),
-        },
-        "last_train": last_agent_train,
-        "last_run_at": last_agent_report.get("generated_at") if last_agent_report else None,
     })
 
 

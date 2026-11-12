@@ -30,3 +30,4 @@
 # Firmware update security
 alert icmp any any -> $HOME_NET any (msg:"ICMP echo request detected"; itype:8; classtype:misc-activity; priority:3; sid:9566901; rev:1;)
 alert icmp any any -> $HOME_NET any (msg:"ICMP echo request detected"; itype:8; classtype:misc-activity; priority:3; sid:9597613; rev:1;)
+drop icmp any any -> $HOME_NET any (msg:"ICMP echo request detected"; itype:8; classtype:misc-activity; priority:3; sid:9775716; rev:1;)

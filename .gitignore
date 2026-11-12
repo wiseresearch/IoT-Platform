@@ -1,0 +1,33 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.bak
+*.bak.*
+*.bak-*
+*.orig
+*.rej
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local runtime output
+*.log
+*.pid
+*.pcap
+*.pcapng
+*.cap
+.edge-tmp/
+.tmp_repo_suricata/
+.tmp_tenyar_suricata/
+Crashpad/
+*.dmp
+
+# Local/generated documents
+Compte_rendu_depuis_*.md
+Rapport_stage*.md
+agents/README.md

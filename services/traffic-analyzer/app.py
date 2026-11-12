@@ -12,6 +12,7 @@ from concurrent import futures
 import time
 import sys
 import hashlib
+import ipaddress
 
 def wait_for_dependencies():
     """Wait for database and Redis to be ready"""
@@ -110,6 +111,29 @@ class DatabaseManager:
                 conn.close()
 
 db = DatabaseManager()
+
+
+def normalize_ip(value):
+    """Return a canonical IP string, or None for non-IP endpoints."""
+    text = str(value or "").strip().strip("[]")
+    if "%" in text:
+        text = text.split("%", 1)[0]
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+
+
+_flow_error_log_at = 0.0
+
+
+def log_flow_error(message):
+    """Avoid filling the container log with the same bad flow every 5s."""
+    global _flow_error_log_at
+    now = time.monotonic()
+    if now - _flow_error_log_at >= 60:
+        logger.error(message)
+        _flow_error_log_at = now
 
 
 SURICATA_SEVERITY_MAP = {
@@ -256,49 +280,61 @@ class TrafficAnalyzer:
             try:
                 # Monitor actual network connections instead of generating mock data
                 self.monitor_real_connections()
-                time.sleep(30)  # Check every 30 seconds
+                time.sleep(float(os.getenv('TRAFFIC_POLL_SECONDS', '5')))
             except Exception as e:
                 logger.error(f"Traffic analysis error: {str(e)}")
     
     def monitor_real_connections(self):
         """Monitor real network connections using host API"""
+        current_flow_ids = None
         try:
             import requests
-            
+
             current_time = datetime.utcnow()
-            logger.info(f"Monitoring real network connections at {current_time.strftime('%H:%M:%S')}")
+            logger.debug(f"Monitoring real network connections at {current_time.strftime('%H:%M:%S')}")
             
             # Try to get connections from host API
             try:
-                host_api_url = "http://host.docker.internal:5556"
+                host_api_url = os.getenv('HOST_TRAFFIC_MONITOR_URL', 'http://host.docker.internal:5556')
                 response = requests.get(f"{host_api_url}/connections", timeout=10)
                 
                 if response.status_code == 200:
                     data = response.json()
                     if data.get('status') == 'success':
                         connections = data.get('connections', [])
-                        logger.info(f"Found {len(connections)} active network connections from host")
+                        logger.debug(f"Found {len(connections)} active network connections from host")
+                        current_flow_ids = []
                         
                         # Log first connection to verify byte data
                         if connections:
                             first = connections[0]
-                            logger.info(f"Sample connection: {first.get('src_ip')}:{first.get('src_port')} -> {first.get('dest_ip')}:{first.get('dest_port')} | bytes_sent={first.get('bytes_sent', 0)}, bytes_recv={first.get('bytes_recv', 0)}")
+                            logger.debug(f"Sample connection: {first.get('src_ip')}:{first.get('src_port')} -> {first.get('dest_ip')}:{first.get('dest_port')} | bytes_sent={first.get('bytes_sent', 0)}, bytes_recv={first.get('bytes_recv', 0)}")
                         
                         for connection in connections:
                             connection['timestamp'] = current_time
-                            self.save_real_traffic_flow(connection)
+                            flow_id = self.flow_id_for(connection)
+                            # Only advertise flows that actually reached the DB;
+                            # otherwise a rejected row keeps its old copy active
+                            # forever because reconciliation thinks it still exists.
+                            if not self.save_real_traffic_flow(connection):
+                                continue
+                            current_flow_ids.append(flow_id)
                             
                             # Publish to Redis for real-time updates
                             redis_client.publish('traffic_events', json.dumps({
                                 'event_type': 'connection',
-                                'src_ip': connection['src_ip'],
-                                'dest_ip': connection['dest_ip'],
-                                'src_port': connection['src_port'],
-                                'dest_port': connection['dest_port'],
-                                'protocol': connection['protocol'],
-                                'state': connection['state'],
+                                'src_ip': normalize_ip(connection.get('src_ip')),
+                                'dest_ip': normalize_ip(connection.get('dest_ip')),
+                                'src_port': connection.get('src_port'),
+                                'dest_port': connection.get('dest_port'),
+                                'protocol': connection.get('protocol'),
+                                'state': connection.get('state'),
                                 'timestamp': current_time.isoformat()
                             }))
+
+                        # Reconcile exactly against this snapshot so the
+                        # "active" table cannot accumulate closed sockets.
+                        self.close_stale_flows(current_flow_ids)
                     else:
                         logger.warning(f"Host API returned error: {data.get('message')}")
                 else:
@@ -313,6 +349,11 @@ class TrafficAnalyzer:
                 
         except Exception as e:
             logger.error(f"Error monitoring real connections: {str(e)}")
+        finally:
+            # If no usable snapshot was received, age out rows by timestamp
+            # instead of leaving sockets active forever after a monitor outage.
+            if current_flow_ids is None:
+                self.close_stale_flows(None)
 
     def monitor_suricata_eve(self):
         """Tail Suricata EVE logs and ingest alert events into security_alerts."""
@@ -500,13 +541,45 @@ class TrafficAnalyzer:
         except Exception as e:
             logger.error(f"Error saving network event: {str(e)}")
     
+    @staticmethod
+    def flow_id_for(connection):
+        """Stable flow id: monitor-provided, else deterministic 5-tuple hash."""
+        flow_id = str(connection.get('flow_id') or '').strip()
+        if flow_id:
+            return flow_id
+        import hashlib
+        raw = "|".join(str(connection.get(k, '')) for k in (
+            'protocol', 'src_ip', 'src_port', 'dest_ip', 'dest_port'))
+        return "flow_" + hashlib.sha1(raw.encode('utf-8', 'replace')).hexdigest()[:16]
+
     def save_real_traffic_flow(self, connection):
-        """Save real traffic flow to database for dashboard"""
+        """Save a real flow; return True only when the row reached the DB."""
         try:
-            import uuid
-            # Generate a unique flow_id
-            flow_id = f"flow_{str(uuid.uuid4())[:8]}"
-            
+            # Reuse the host monitor's stable flow id so repeated polls update
+            # the same row instead of inserting a new copy every 5 seconds.
+            flow_id = self.flow_id_for(connection)[:100]
+            src_ip = normalize_ip(connection.get('src_ip'))
+            dest_ip = normalize_ip(connection.get('dest_ip'))
+            if not src_ip or not dest_ip:
+                log_flow_error(
+                    "Skipping traffic flow with an invalid endpoint: "
+                    f"src={connection.get('src_ip')!r} dest={connection.get('dest_ip')!r}"
+                )
+                return False
+
+            def as_int(value, default=0):
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    return default
+
+            def as_port(value):
+                try:
+                    port = int(value)
+                    return port if 0 <= port <= 65535 else None
+                except (TypeError, ValueError):
+                    return None
+
             query = """
             INSERT INTO traffic_flows (flow_id, src_ip, dest_ip, src_port, dest_port, 
                                      protocol, bytes_to_server, bytes_to_client, 
@@ -514,38 +587,74 @@ class TrafficAnalyzer:
                                      start_time, end_time, duration_seconds, state)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+            bytes_to_server = VALUES(bytes_to_server),
+            bytes_to_client = VALUES(bytes_to_client),
+            packets_to_server = VALUES(packets_to_server),
+            packets_to_client = VALUES(packets_to_client),
             end_time = VALUES(end_time),
-            duration_seconds = VALUES(duration_seconds),
+            duration_seconds = TIMESTAMPDIFF(SECOND, start_time, VALUES(end_time)),
             state = VALUES(state)
             """
-            
-            # Get real byte and packet counts from host monitor (TShark data)
-            bytes_sent = connection.get('bytes_sent', 0)
-            bytes_recv = connection.get('bytes_recv', 0)
-            packets_sent = connection.get('packets_sent', 1)
-            packets_recv = connection.get('packets_recv', 1)
-            
+
+            protocol = str(connection.get('protocol') or 'tcp').strip().lower()[:20] or 'tcp'
+            state = str(connection.get('state') or 'established').strip()[:50] or 'established'
+            timestamp = connection.get('timestamp') or datetime.utcnow()
             params = (
                 flow_id,
-                connection.get('src_ip'),
-                connection.get('dest_ip'),
-                connection.get('src_port'),
-                connection.get('dest_port'),
-                connection.get('protocol', 'tcp'),
-                bytes_sent,  # Real bytes from TShark
-                bytes_recv,  # Real bytes from TShark
-                packets_sent,  # Real packet count from TShark
-                packets_recv,  # Real packet count from TShark
-                connection.get('timestamp'),  # start_time
-                connection.get('timestamp'),  # end_time (same as start for netstat snapshot)
-                0,  # duration_seconds (unknown for netstat snapshot)
-                connection.get('state', 'established')
+                src_ip,
+                dest_ip,
+                as_port(connection.get('src_port')),
+                as_port(connection.get('dest_port')),
+                protocol,
+                as_int(connection.get('bytes_sent', 0)),
+                as_int(connection.get('bytes_recv', 0)),
+                as_int(connection.get('packets_sent', 1), 1),
+                as_int(connection.get('packets_recv', 1), 1),
+                timestamp,  # start_time
+                timestamp,  # end_time (same as start for a snapshot)
+                0,          # duration_seconds is recalculated on update
+                state
             )
             
             db.execute_query(query, params)
+            return True
             
         except Exception as e:
-            logger.error(f"Error saving real traffic flow: {str(e)}")
+            log_flow_error(f"Error saving real traffic flow: {str(e)}")
+            return False
+
+    def close_stale_flows(self, active_flow_ids=None):
+        """Close flows absent from the latest host snapshot, or by age if no snapshot."""
+        try:
+            if active_flow_ids is not None:
+                params = []
+                placeholders = ''
+                if active_flow_ids:
+                    placeholders = ', '.join(['%s'] * len(active_flow_ids))
+                    params = list(active_flow_ids)
+                query = """
+                UPDATE traffic_flows
+                SET state = 'closed',
+                    end_time = GREATEST(end_time, UTC_TIMESTAMP()),
+                    duration_seconds = TIMESTAMPDIFF(SECOND, start_time, GREATEST(end_time, UTC_TIMESTAMP()))
+                WHERE COALESCE(state, '') <> 'closed'
+                """
+                if placeholders:
+                    query += f" AND flow_id NOT IN ({placeholders})"
+                db.execute_query(query, tuple(params))
+            else:
+                db.execute_query(
+                    """
+                    UPDATE traffic_flows
+                    SET state = 'closed',
+                        end_time = GREATEST(end_time, UTC_TIMESTAMP()),
+                        duration_seconds = TIMESTAMPDIFF(SECOND, start_time, GREATEST(end_time, UTC_TIMESTAMP()))
+                    WHERE COALESCE(state, '') <> 'closed'
+                      AND end_time < (UTC_TIMESTAMP() - INTERVAL 15 SECOND)
+                    """
+                )
+        except Exception as e:
+            logger.error(f"Error closing stale traffic flows: {str(e)}")
     
     def save_traffic_flow(self, flow):
         """Save traffic flow to database for dashboard"""
@@ -662,6 +771,7 @@ def get_traffic_flows():
         window_hours = max(1, min(window_hours, 720))
         limit = request.args.get('limit', default=100, type=int) or 100
         limit = max(20, min(limit, 2000))
+        include_closed = str(request.args.get('include_closed', 'false')).lower() in ('1', 'true', 'yes')
         cutoff_time = datetime.utcnow() - timedelta(hours=window_hours)
 
         query = """
@@ -669,16 +779,21 @@ def get_traffic_flows():
                bytes_to_server, bytes_to_client, packets_to_server, packets_to_client,
                start_time, end_time, duration_seconds, state
         FROM traffic_flows
-        WHERE start_time >= %s
-        ORDER BY start_time DESC
-        LIMIT %s
+        WHERE end_time >= %s
         """
-        
-        flows = db.execute_query(query, (cutoff_time, limit), fetch=True)
+        params = [cutoff_time]
+        if not include_closed:
+            query += " AND state IN ('established', 'ESTABLISHED', 'udp')"
+        query += " ORDER BY end_time DESC LIMIT %s"
+        params.append(limit)
+
+        flows = db.execute_query(query, tuple(params), fetch=True)
         return jsonify({
             'flows': flows,
             'window_hours': window_hours,
-            'limit': limit
+            'limit': limit,
+            'active_only': not include_closed,
+            'count': len(flows or [])
         })
         
     except Exception as e:
@@ -739,4 +854,6 @@ if __name__ == '__main__':
     traffic_analyzer.start_analysis()
     
     # Start Flask app
-    app.run(host='0.0.0.0', port=5002, debug=os.getenv('FLASK_DEBUG', 'False').lower() == 'true')
+    app.run(host='0.0.0.0', port=5002,
+            debug=os.getenv('FLASK_DEBUG', 'False').lower() == 'true',
+            threaded=True, use_reloader=False)

@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import os
 import re
 import subprocess
@@ -45,6 +46,17 @@ def _run_command(args, timeout=5):
 
 
 def list_connected_interfaces():
+    if os.name != "nt":
+        try:
+            links = json.loads(_run_command(["ip", "-j", "link", "show"]) or "[]")
+        except json.JSONDecodeError:
+            return []
+        return [
+            link.get("ifname")
+            for link in links
+            if link.get("ifname") and link.get("operstate") == "UP"
+        ]
+
     output = _run_command(["netsh", "interface", "show", "interface"])
     names = []
 
@@ -63,6 +75,43 @@ def list_connected_interfaces():
 
 
 def list_ipv4_interfaces():
+    if os.name != "nt":
+        try:
+            addresses = json.loads(_run_command(["ip", "-j", "-4", "addr", "show"]) or "[]")
+            routes = json.loads(_run_command(["ip", "-j", "-4", "route", "show", "default"]) or "[]")
+        except json.JSONDecodeError:
+            return []
+
+        default_gateways = {}
+        for route in routes:
+            dev = route.get("dev")
+            if dev and route.get("gateway") and dev not in default_gateways:
+                default_gateways[dev] = route.get("gateway")
+
+        interfaces = []
+        for link in addresses:
+            name = link.get("ifname")
+            if not name or name == "lo":
+                continue
+            for addr in link.get("addr_info", []):
+                if addr.get("family") != "inet" or not addr.get("local"):
+                    continue
+                prefix = addr.get("prefixlen")
+                subnet = None
+                if prefix is not None:
+                    try:
+                        subnet = str(ipaddress.ip_network(f"{addr['local']}/{prefix}", strict=False))
+                    except ValueError:
+                        subnet = None
+                interfaces.append({
+                    "name": name,
+                    "ip": addr.get("local"),
+                    "subnet": subnet,
+                    "gateway": default_gateways.get(name),
+                    "mac": link.get("address"),
+                })
+        return interfaces
+
     output = _run_command(["netsh", "interface", "ipv4", "show", "addresses"])
     interfaces = []
     current = None

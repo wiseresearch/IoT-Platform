@@ -179,10 +179,11 @@ CREATE TABLE IF NOT EXISTS traffic_flows (
     state VARCHAR(50),
     reason VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_flow_id (flow_id),
+    UNIQUE KEY idx_flow_id (flow_id),
     INDEX idx_src_ip (src_ip),
     INDEX idx_dest_ip (dest_ip),
-    INDEX idx_start_time (start_time)
+    INDEX idx_start_time (start_time),
+    INDEX idx_end_time (end_time)
 );
 
 -- ============================================================================

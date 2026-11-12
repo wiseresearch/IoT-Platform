@@ -1,4 +1,4 @@
-// Unified Security Platform - Main JavaScript
+// IoT Security Platform - Main JavaScript
 const MOCK_TRAFFIC = false;
 
 class UnifiedSecurityPlatform {

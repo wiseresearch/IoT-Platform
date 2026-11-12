@@ -3,6 +3,7 @@
 
 from flask import Flask, jsonify, request
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from datetime import datetime
@@ -88,6 +89,69 @@ def build_quick_scan_targets(target_network):
 
     return targets
 
+
+def _ping_host(ip):
+    """Return True when a single ICMP echo succeeds."""
+    cmd = ["ping", "-n", "1", "-w", "1000", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).returncode == 0
+    except Exception:
+        return False
+
+
+def _read_ipv4_neighbors():
+    """Return {ip: {mac, state}} from the kernel neighbour table (Linux)."""
+    neighbors = {}
+    if os.name == "nt":
+        return neighbors
+    try:
+        result = subprocess.run(["ip", "-j", "-4", "neigh", "show"], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0 or not result.stdout.strip():
+            return neighbors
+        for item in json.loads(result.stdout):
+            ip = item.get("dst")
+            if not ip:
+                continue
+            state = item.get("state", "")
+            if isinstance(state, list):
+                state = state[0] if state else ""
+            neighbors[ip] = {
+                "mac": item.get("lladdr"),
+                "state": str(state).upper()
+            }
+    except Exception:
+        pass
+    return neighbors
+
+
+def _local_host_neighbor():
+    """Return the host's own (ip, mac) so loopback is not the only missing identity."""
+    try:
+        info = detect_primary_interface()
+        ip = info.get("ip")
+        mac = info.get("mac")
+        if not mac and os.name != "nt":
+            name = info.get("name")
+            if name:
+                try:
+                    with open(f"/sys/class/net/{name}/address", "r", encoding="utf-8") as handle:
+                        mac = handle.read().strip() or None
+                except OSError:
+                    mac = None
+        return ip, mac
+    except Exception:
+        return None, None
+
+
+def _ping_sweep(target_network, max_workers=64):
+    """Ping every usable host in a /24-or-smaller network in parallel."""
+    hosts = [str(host) for host in target_network.hosts()]
+    if len(hosts) > 1024:
+        return None, []
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(hosts)))) as pool:
+        results = list(pool.map(lambda ip: (ip, _ping_host(ip)), hosts))
+    return hosts, results
+
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -103,35 +167,53 @@ def health():
 def get_neighbors():
     """Return current ARP/neighbor table (passive)"""
     try:
-        cmd = (
-            'powershell -ExecutionPolicy Bypass -Command '
-            '"Get-NetNeighbor -AddressFamily IPv4 | '
-            'Select-Object IPAddress, LinkLayerAddress, @{Name=\'State\';Expression={$_.State.ToString()}} | '
-            'ConvertTo-Json -Compress"'
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
-        if result.returncode != 0:
-            return jsonify({
-                "status": "error",
-                "message": result.stderr
-            }), 500
+        if os.name != "nt":
+            result = subprocess.run(["ip", "-j", "-4", "neigh", "show"], capture_output=True, text=True, timeout=10)
+            raw = json.loads(result.stdout) if result.stdout.strip() else []
+            items = []
+            for n in raw:
+                ip = n.get("dst")
+                if not ip:
+                    continue
+                state = n.get("state", "")
+                if isinstance(state, list):
+                    state = state[0] if state else ""
+                items.append({
+                    "ip": ip,
+                    "mac": n.get("lladdr"),
+                    "state": str(state).upper(),
+                    "dev": n.get("dev"),
+                })
+        else:
+            cmd = (
+                'powershell -ExecutionPolicy Bypass -Command '
+                '"Get-NetNeighbor -AddressFamily IPv4 | '
+                'Select-Object IPAddress, LinkLayerAddress, @{Name=\'State\';Expression={$_.State.ToString()}} | '
+                'ConvertTo-Json -Compress"'
+            )
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)
+            if result.returncode != 0:
+                return jsonify({
+                    "status": "error",
+                    "message": result.stderr
+                }), 500
 
-        raw = json.loads(result.stdout) if result.stdout else []
-        neighbors = raw if isinstance(raw, list) else [raw]
-        items = []
-        for n in neighbors:
-            ip = n.get('IPAddress')
-            mac = n.get('LinkLayerAddress')
-            state = n.get('State', '')
-            if isinstance(state, (int, float)) or (isinstance(state, str) and state.isdigit()):
-                state = STATE_MAP.get(int(state), str(state))
-            if not ip:
-                continue
-            items.append({
-                "ip": ip,
-                "mac": mac,
-                "state": state
-            })
+            raw = json.loads(result.stdout) if result.stdout else []
+            neighbors = raw if isinstance(raw, list) else [raw]
+            items = []
+            for n in neighbors:
+                ip = n.get('IPAddress')
+                mac = n.get('LinkLayerAddress')
+                state = n.get('State', '')
+                if isinstance(state, (int, float)) or (isinstance(state, str) and state.isdigit()):
+                    state = STATE_MAP.get(int(state), str(state))
+                if not ip:
+                    continue
+                items.append({
+                    "ip": ip,
+                    "mac": mac,
+                    "state": state
+                })
 
         return jsonify({
             "status": "success",
@@ -184,6 +266,14 @@ def get_host_info():
                     break
         except Exception:
             mac = None
+        if not mac and os.name != "nt":
+            interface_name = network_info.get('name')
+            if interface_name:
+                try:
+                    with open(f"/sys/class/net/{interface_name}/address", "r", encoding="utf-8") as handle:
+                        mac = handle.read().strip() or None
+                except OSError:
+                    mac = None
 
         payload = {
             "ip": ip,
@@ -231,22 +321,24 @@ def reachability():
         if not filtered:
             return jsonify({"status": "success", "results": {}})
 
-        results = {}
-        for ip in filtered:
+        def ping_one(ip):
             try:
-                ping_cmd = ["ping", "-n", "1", "-w", "1000", ip]
+                if os.name == "nt":
+                    ping_cmd = ["ping", "-n", "1", "-w", "1000", ip]
+                else:
+                    ping_cmd = ["ping", "-c", "1", "-W", "1", ip]
                 ping_result = subprocess.run(
                     ping_cmd,
                     capture_output=True,
                     text=True,
-                    timeout=2
+                    timeout=3
                 )
-                if ping_result.returncode == 0 and "TTL=" in (ping_result.stdout or ""):
-                    results[ip] = True
-                else:
-                    results[ip] = False
+                return ip, ping_result.returncode == 0
             except Exception:
-                results[ip] = False
+                return ip, False
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            results = dict(pool.map(ping_one, filtered))
 
         return jsonify({"status": "success", "results": results})
     except Exception as e:
@@ -254,152 +346,134 @@ def reachability():
 
 @app.route('/scan', methods=['GET'])
 def scan_network():
-    """Trigger PowerShell network scan and return results"""
+    """Discover LAN hosts via a parallel ping sweep plus the ARP table."""
     try:
         network_range = request.args.get('range') or get_default_scan_range()
         target_network = parse_target_network(network_range)
-        
-        # Get the directory of this script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        ps_script = os.path.join(script_dir, "host_network_scanner.ps1")
-        use_inline = not os.path.exists(ps_script)
-        
-        if use_inline:
-            # Fallback: use Get-NetNeighbor if script is missing
-            cmd = (
-                'powershell -ExecutionPolicy Bypass -Command '
-                '"Get-NetNeighbor -AddressFamily IPv4 | '
-                'Select-Object IPAddress, LinkLayerAddress, @{Name=\'State\';Expression={$_.State.ToString()}} | '
-                'ConvertTo-Json -Compress"'
-            )
-        else:
-            cmd = f'powershell -ExecutionPolicy Bypass -File "{ps_script}" -NetworkRange "{network_range}"'
-        
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-        
-        if result.returncode == 0:
-            if use_inline:
-                try:
-                    raw = json.loads(result.stdout)
-                    neighbors = raw if isinstance(raw, list) else [raw]
-
-                    hosts = []
-                    for n in neighbors:
-                        ip = n.get('IPAddress')
-                        mac = n.get('LinkLayerAddress')
-                        state = n.get('State', '')
-                        if not ip or not ip_in_target_network(ip, target_network):
-                            continue
-                        hosts.append({
-                            "ip": ip,
-                            "mac": mac,
-                            "hostname": "",
-                            "state": state,
-                            "device_type": "Neighbor"
-                        })
-
-                    return jsonify({
-                        "status": "success",
-                        "data": {
-                            "hosts": hosts,
-                            "method": "get-netneighbor"
-                        }
-                    })
-                except json.JSONDecodeError as e:
-                    return jsonify({
-                        "status": "error",
-                        "message": f"Failed to parse Get-NetNeighbor JSON: {str(e)}",
-                        "raw_output": result.stdout
-                    }), 500
-
-            # Parse output for JSON
-            lines = result.stdout.split('\n')
-            json_start = -1
-            
-            for i, line in enumerate(lines):
-                if 'JSON Output:' in line:
-                    json_start = i + 1
-                    break
-            
-            if json_start > 0:
-                json_lines = lines[json_start:]
-                json_text = '\n'.join([line for line in json_lines if line.strip()])
-                
-                try:
-                    scan_results = json.loads(json_text)
-                    return jsonify({
-                        "status": "success",
-                        "data": scan_results
-                    })
-                except json.JSONDecodeError as e:
-                    return jsonify({
-                        "status": "error",
-                        "message": f"Failed to parse JSON: {str(e)}",
-                        "raw_output": result.stdout
-                    }), 500
-            else:
-                return jsonify({
-                    "status": "error", 
-                    "message": "No JSON output found",
-                    "raw_output": result.stdout
-                }), 500
-        else:
+        if not target_network or target_network.version != 4:
             return jsonify({
                 "status": "error",
-                "message": f"PowerShell script failed: {result.stderr}",
-                "returncode": result.returncode
-            }), 500
-            
+                "message": f"Invalid IPv4 network range: {network_range}"
+            }), 400
+
+        if os.name == "nt":
+            command = (
+                "Get-NetNeighbor -AddressFamily IPv4 | "
+                "Select-Object IPAddress, LinkLayerAddress, "
+                "@{Name='State';Expression={$_.State.ToString()}} | "
+                "ConvertTo-Json -Compress"
+            )
+            result = subprocess.run(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", command],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode != 0:
+                return jsonify({"status": "error", "message": result.stderr}), 500
+            raw = json.loads(result.stdout) if result.stdout.strip() else []
+            rows = raw if isinstance(raw, list) else [raw]
+            hosts = []
+            for row in rows:
+                ip = row.get("IPAddress")
+                if not ip or not ip_in_target_network(ip, target_network):
+                    continue
+                state = row.get("State", "")
+                if isinstance(state, (int, float)) or (isinstance(state, str) and state.isdigit()):
+                    state = STATE_MAP.get(int(state), str(state))
+                hosts.append({
+                    "ip": ip,
+                    "mac": row.get("LinkLayerAddress"),
+                    "hostname": "",
+                    "state": str(state).upper(),
+                    "device_type": "Unknown"
+                })
+            return jsonify({
+                "status": "success",
+                "data": {"hosts": hosts, "method": "get-netneighbor"}
+            })
+
+        targets, ping_results = _ping_sweep(target_network)
+        if targets is None:
+            return jsonify({
+                "status": "error",
+                "message": "Network range is too large (maximum 1024 hosts)"
+            }), 400
+
+        responsive = {ip for ip, is_up in ping_results if is_up}
+        neighbors = _read_ipv4_neighbors()
+        local_ip, local_mac = _local_host_neighbor()
+        if local_ip and local_mac and ip_in_target_network(local_ip, target_network):
+            neighbors.setdefault(local_ip, {"mac": local_mac, "state": "REACHABLE"})
+        candidate_ips = responsive | set(neighbors)
+        hosts = []
+        for ip in sorted(candidate_ips, key=lambda value: ipaddress.ip_address(value)):
+            if not ip_in_target_network(ip, target_network):
+                continue
+            neighbor = neighbors.get(ip, {})
+            state = str(neighbor.get("state") or "").upper()
+            if state in ("FAILED", "INCOMPLETE") and ip not in responsive:
+                continue
+            hosts.append({
+                "ip": ip,
+                "mac": neighbor.get("mac"),
+                "hostname": "",
+                "state": state or ("REACHABLE" if ip in responsive else ""),
+                "device_type": "Unknown"
+            })
+
+        return jsonify({
+            "status": "success",
+            "data": {
+                "hosts": hosts,
+                "method": "ping+arp",
+                "scanned": len(targets),
+                "responsive": len(responsive)
+            }
+        })
     except subprocess.TimeoutExpired:
-        return jsonify({
-            "status": "error",
-            "message": "Scan timed out after 120 seconds"
-        }), 500
+        return jsonify({"status": "error", "message": "Scan timed out"}), 500
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/quick-scan', methods=['GET'])
 def quick_scan():
-    """Quick ping-only scan for faster results"""
+    """Ping a small representative host set for a fast discovery pass."""
     try:
         network_range = request.args.get('range') or get_default_scan_range()
         target_network = parse_target_network(network_range)
-
         if not target_network:
             return jsonify({
                 "status": "error",
                 "message": f"Invalid network range: {network_range}"
             }), 400
 
-        results = []
+        targets = build_quick_scan_targets(target_network)
+        neighbors = _read_ipv4_neighbors()
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(targets)))) as pool:
+            results = list(pool.map(lambda ip: (ip, _ping_host(ip)), targets))
 
-        for ip in build_quick_scan_targets(target_network):
-            ping_cmd = f'ping -n 1 -w 1000 {ip}'
-            ping_result = subprocess.run(ping_cmd, shell=True, capture_output=True, text=True)
-
-            if ping_result.returncode == 0 and "TTL=" in ping_result.stdout:
-                results.append({
-                    "ip": ip,
-                    "status": "up",
-                    "method": "ping"
-                })
+        hosts = []
+        for ip, is_up in results:
+            if not is_up:
+                continue
+            neighbor = neighbors.get(ip, {})
+            hosts.append({
+                "ip": ip,
+                "status": "up",
+                "method": "ping",
+                "mac": neighbor.get("mac"),
+                "state": neighbor.get("state", "REACHABLE"),
+                "device_type": "Unknown"
+            })
 
         return jsonify({
             "status": "success",
             "scan_time": datetime.now().isoformat(),
             "network_range": network_range,
-            "total_hosts_found": len(results),
-            "hosts": results
+            "total_hosts_found": len(hosts),
+            "hosts": hosts
         })
-            
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     default_range = get_default_scan_range()

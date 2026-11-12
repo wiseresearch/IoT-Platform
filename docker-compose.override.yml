@@ -1,0 +1,139 @@
+# Local-machine overrides — keeps upstream files untouched.
+#
+# 1) api-gateway: upstream publishes host port 8080, which is already taken by the
+#    local llama.cpp server (127.0.0.1:8080). Publish on 8000 instead.
+# 2) healthchecks: the Dockerfiles call `curl`, but none of the images install it,
+#    so every service reported "unhealthy" while actually being fine. Use python3.
+
+services:
+  # Ollama-compatible facade over the local llama.cpp server (127.0.0.1:8080).
+  # Host networking is required: llama.cpp binds loopback only, so a bridged
+  # container cannot reach it. The bridge itself listens on docker0's gateway
+  # (172.17.0.1), which containers reach as host.docker.internal and the LAN
+  # cannot route to. Replaces the missing Ollama/gemma4:e4b backend.
+  llm-bridge:
+    image: python:3.11-slim
+    container_name: llm_bridge
+    restart: unless-stopped
+    network_mode: host
+    command: ["python3", "/app/app.py"]
+    volumes:
+      - ./local-llm-bridge/app.py:/app/app.py:ro
+    environment:
+      - LLAMA_URL=http://127.0.0.1:8080
+      - BIND_HOST=172.17.0.1
+      - BIND_PORT=11434
+      - MODEL_ALIAS=qwen3.5-9b
+      - DEFAULT_MAX_TOKENS=700
+      - READ_TIMEOUT_SECONDS=600
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://172.17.0.1:11434/health', timeout=5).getcode()==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  api-gateway:
+    # SSE (/api/events) keeps one request open per dashboard tab. With gunicorn's
+    # default sync workers those long-lived streams occupy every worker and all
+    # normal API calls queue until the 120s worker timeout — the Devices page
+    # then sits on "Loading devices..." forever. gthread gives each stream its
+    # own thread instead of starving the pool.
+    command: ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "8", "--worker-class", "gthread", "--timeout", "120", "app:app"]
+    ports: !override
+      - "8000:8000"
+    # Resolve the host's traffic monitor (host_traffic_monitor.py on :5556),
+    # which the /api/traffic/live proxy depends on.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Live-mount the gateway source so local endpoint fixes (e.g. the LLM report
+    # timeout, raised for the 9B local model's slower generations) take effect
+    # without rebuilding the image.
+    volumes:
+      - ./api-gateway/app.py:/app/app.py:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=8).getcode()==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  vulnerability-scanner:
+    # nmap -O refuses to run as uid 1000 ("TCP/IP fingerprinting requires root
+    # privileges"), which left every device with OS "Unknown" and skipped CVE
+    # correlation entirely. The image sets USER scanner; run it as root instead.
+    # NET_RAW is already granted below, so no extra capabilities are needed.
+    user: "0:0"
+    environment:
+      # Gemma was never actually installed; route the Ollama-shaped calls to the
+      # llm-bridge facade in front of the local llama.cpp Qwen model.
+      - LLM_MODEL=qwen3.5-9b
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5001/health', timeout=8).getcode()==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  traffic-analyzer:
+    # Live-mount the analyzer source and give it a DNS name for the host.
+    # It polls the dependency-free host traffic monitor (host_traffic_monitor.py,
+    # systemd user unit) on port 5556; without host-gateway the name does not
+    # resolve inside the bridge network and the traffic page stays empty.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - HOST_TRAFFIC_MONITOR_URL=http://host.docker.internal:5556
+      - TRAFFIC_POLL_SECONDS=5
+    volumes:
+      - ./services/traffic-analyzer/app.py:/app/app.py:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5002/health', timeout=8).getcode()==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  correlation-engine:
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5003/health', timeout=8).getcode()==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  log-llm-analyzer:
+    environment:
+      - LLM_MODEL=qwen3.5-9b
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5004/health', timeout=8).getcode()==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  web-dashboard:
+    depends_on:
+      api-gateway:
+        condition: service_started
+    healthcheck:
+      # upstream probes localhost, which resolves to ::1 first and the nginx
+      # vhost only listens on IPv4 -> permanent "unhealthy". Pin IPv4.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  vuln-celery-worker:
+    # Same reason: the scan task shells out to `nmap -O`, and the worker image
+    # runs as uid 1000. Upstream already marks this service privileged with
+    # NET_RAW/NET_ADMIN, so root here adds no new host-level reach.
+    user: "0:0"
+    healthcheck:
+      # worker exposes no HTTP port; ask celery itself whether it answers pings
+      test: ["CMD-SHELL", "celery -A celery_app inspect ping -t 3 2>/dev/null | grep -q pong"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 30s

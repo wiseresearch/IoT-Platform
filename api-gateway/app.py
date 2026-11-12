@@ -530,19 +530,25 @@ def get_vulnerabilities():
     """Get vulnerability data (fast proxy + stale cache fallback)."""
     global vulnerabilities_cache
     force_refresh = str(request.args.get('force_refresh', '0')).lower() in ('1', 'true', 'yes')
+    requested_device_id = str(request.args.get('device_id') or '').strip()
+    scanner_params = {'force_refresh': '1' if force_refresh else '0'}
+    if requested_device_id:
+        scanner_params['device_id'] = requested_device_id
     try:
         response = requests.get(
             f"{VULNERABILITY_SERVICE}/vulnerabilities",
-            params={'force_refresh': '1' if force_refresh else '0'},
+            params=scanner_params,
             timeout=25
         )
         if response.ok:
             payload = response.json() or {}
             items = payload.get('vulnerabilities', []) or []
-            vulnerabilities_cache = {
-                'items': items,
-                'updated_at': datetime.utcnow().isoformat()
-            }
+            # A targeted lookup must not replace the all-device cache with one row.
+            if not requested_device_id:
+                vulnerabilities_cache = {
+                    'items': items,
+                    'updated_at': datetime.utcnow().isoformat()
+                }
             return jsonify({'vulnerabilities': items})
 
         logger.warning(f"Vulnerability scanner returned status {response.status_code}; using cache if available")
@@ -551,6 +557,11 @@ def get_vulnerabilities():
 
     # Fallback to the last successful response instead of returning empty.
     cached_items = vulnerabilities_cache.get('items') or []
+    if requested_device_id:
+        cached_items = [
+            item for item in cached_items
+            if str(item.get('device_id')) == requested_device_id
+        ]
     if cached_items:
         return jsonify({
             'vulnerabilities': cached_items,
@@ -624,15 +635,32 @@ def get_device_cve_alerts():
         except ValueError:
             limit = 300
 
-        # 1) Correlated CVE rows from vulnerability view (usually much larger than local DB links)
-        corr_resp = requests.get(f"{VULNERABILITY_SERVICE}/vulnerabilities", timeout=12)
-        corr_payload = {}
-        if corr_resp.ok:
+        # 1) Correlated CVE rows from vulnerability view. The dashboard often
+        # calls /api/vulnerabilities immediately before this endpoint, so
+        # reuse that in-process snapshot instead of paying for a second
+        # full correlation pass (important with hundreds of devices).
+        correlated_rows = []
+        cached_items = vulnerabilities_cache.get('items') or []
+        cached_at = vulnerabilities_cache.get('updated_at')
+        cache_fresh = False
+        if cached_items and cached_at:
             try:
-                corr_payload = corr_resp.json() or {}
-            except Exception:
-                corr_payload = {}
-        correlated_rows = corr_payload.get('vulnerabilities', []) or []
+                age = (datetime.utcnow() - datetime.fromisoformat(cached_at)).total_seconds()
+                cache_fresh = age < 60
+            except (TypeError, ValueError):
+                cache_fresh = False
+
+        if cache_fresh:
+            correlated_rows = cached_items
+        else:
+            corr_resp = requests.get(f"{VULNERABILITY_SERVICE}/vulnerabilities", timeout=12)
+            corr_payload = {}
+            if corr_resp.ok:
+                try:
+                    corr_payload = corr_resp.json() or {}
+                except Exception:
+                    corr_payload = {}
+            correlated_rows = corr_payload.get('vulnerabilities', []) or []
 
         # 2) Local DB status rows (open/patched/mitigated) for fixed/not-fixed mapping
         local_resp = requests.get(
@@ -1102,7 +1130,7 @@ def get_device_general_report():
                 llm_resp = requests.post(
                     f"{LOG_ANALYZER_SERVICE}/reports/device-general",
                     json=report_payload,
-                    timeout=8
+                    timeout=int(os.getenv('LLM_REPORT_TIMEOUT_SECONDS', '180'))
                 )
                 if llm_resp.ok:
                     llm_payload = llm_resp.json() or {}
@@ -1202,70 +1230,6 @@ def run_logs_analysis():
         logger.error(f"Logs analysis proxy error: {str(e)}")
         return jsonify({'error': 'Service unavailable'}), 503
 
-@app.route('/api/logs/analysis/latest', methods=['GET'])
-def get_latest_logs_analysis():
-    """Get latest LLM logs analysis report."""
-    try:
-        response = requests.get(f"{LOG_ANALYZER_SERVICE}/logs/analysis/latest", timeout=20)
-        return Response(
-            response.content,
-            status=response.status_code,
-            content_type=response.headers.get('content-type', 'application/json')
-        )
-    except Exception as e:
-        logger.error(f"Latest logs analysis proxy error: {str(e)}")
-        return jsonify({'error': 'Service unavailable'}), 503
-
-@app.route('/api/agent/run', methods=['POST'])
-def run_ai_agent():
-    """Run the AI security agent workflow."""
-    try:
-        response = requests.post(
-            f"{LOG_ANALYZER_SERVICE}/agent/run",
-            json=request.get_json(silent=True) or {},
-            timeout=120
-        )
-        return Response(
-            response.content,
-            status=response.status_code,
-            content_type=response.headers.get('content-type', 'application/json')
-        )
-    except Exception as e:
-        logger.error(f"AI agent run proxy error: {str(e)}")
-        return jsonify({'error': 'Service unavailable'}), 503
-
-@app.route('/api/agent/train', methods=['POST'])
-def train_ai_agent():
-    """Train/update the AI agent SVM model."""
-    try:
-        response = requests.post(
-            f"{LOG_ANALYZER_SERVICE}/agent/train",
-            json=request.get_json(silent=True) or {},
-            timeout=180
-        )
-        return Response(
-            response.content,
-            status=response.status_code,
-            content_type=response.headers.get('content-type', 'application/json')
-        )
-    except Exception as e:
-        logger.error(f"AI agent train proxy error: {str(e)}")
-        return jsonify({'error': 'Service unavailable'}), 503
-
-@app.route('/api/agent/status', methods=['GET'])
-def get_ai_agent_status():
-    """Get AI agent status and model metadata."""
-    try:
-        response = requests.get(f"{LOG_ANALYZER_SERVICE}/agent/status", timeout=20)
-        return Response(
-            response.content,
-            status=response.status_code,
-            content_type=response.headers.get('content-type', 'application/json')
-        )
-    except Exception as e:
-        logger.error(f"AI agent status proxy error: {str(e)}")
-        return jsonify({'error': 'Service unavailable'}), 503
-
 @app.route('/api/alerts', methods=['GET'])
 # @auth_required  # Temporarily disabled for testing
 def get_alerts():
@@ -1330,8 +1294,9 @@ def get_traffic_flows():
                    bytes_to_server, bytes_to_client, packets_to_server, packets_to_client,
                    start_time, end_time, duration_seconds, state
             FROM traffic_flows
-            WHERE start_time >= %s
-            ORDER BY start_time DESC
+            WHERE end_time >= %s
+              AND state IN ('established', 'ESTABLISHED', 'udp')
+            ORDER BY end_time DESC
             LIMIT %s
             """
             
@@ -1353,6 +1318,24 @@ def get_traffic_flows():
         except Exception as db_error:
             logger.error(f"Database fallback error: {str(db_error)}")
             return jsonify({'error': 'Traffic service unavailable and database fallback failed'}), 503
+
+@app.route('/api/traffic/live', methods=['GET'])
+def get_traffic_live():
+    """Proxy the host monitor's 30-second interface series for the live chart."""
+    try:
+        response = requests.get(
+            f"{HOST_TRAFFIC_MONITOR}/series",
+            params={'window': max(5, min(int(request.args.get('window', 30)), 180))},
+            timeout=4
+        )
+        return Response(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get('content-type', 'application/json')
+        )
+    except Exception as e:
+        logger.error(f"Traffic live proxy error: {str(e)}")
+        return jsonify({'status': 'error', 'error': 'Host traffic monitor unavailable'}), 503
 
 @app.route('/api/traffic/stream')
 @auth_required
@@ -1565,8 +1548,7 @@ def get_siem_posture():
                 'devices': executor.submit(safe_get, f"{VULNERABILITY_SERVICE}/devices", 20),
                 'vulns': executor.submit(safe_get, f"{VULNERABILITY_SERVICE}/vulnerabilities", 30),
                 'alerts': executor.submit(safe_get, f"{TRAFFIC_SERVICE}/alerts", 20),
-                'incidents': executor.submit(safe_get, f"{CORRELATION_SERVICE}/incidents", 20),
-                'agent_status': executor.submit(safe_get, f"{LOG_ANALYZER_SERVICE}/agent/status", 20)
+                'incidents': executor.submit(safe_get, f"{CORRELATION_SERVICE}/incidents", 20)
             }
             result = {name: future.result() for name, future in futures.items()}
 
@@ -1621,14 +1603,6 @@ def get_siem_posture():
         critical_incidents = sum(1 for i in incidents if str(i.get('severity', '')).lower() == 'critical')
         high_incidents = sum(1 for i in incidents if str(i.get('severity', '')).lower() == 'high')
         open_alerts = sum(1 for a in alerts if str(a.get('status', 'open')).lower() == 'open')
-
-        agent_status_payload = result['agent_status'].get('payload', {}) or {}
-        ai_agent = {
-            'service_ok': result['agent_status'].get('ok', False),
-            'model_trained': bool(agent_status_payload.get('model_trained')),
-            'last_run_at': agent_status_payload.get('last_run_at'),
-            'llm_enabled': bool(agent_status_payload.get('llm_enabled', False))
-        }
 
         recommendations = []
         if total_devices == 0:
@@ -1692,7 +1666,6 @@ def get_siem_posture():
                 'severity_totals': severity_totals,
                 'note': 'CVE data is OS/OS-version correlation only, not confirmed exploitation.'
             },
-            'ai_agent': ai_agent,
             'recommendations': recommendations
         })
     except Exception as e:
@@ -1708,6 +1681,11 @@ def get_siem_posture():
 def subscribe_to_events():
     """Subscribe to real-time security events"""
     def generate():
+        # Send an initial comment so the response headers (and the stream itself)
+        # are flushed right away; otherwise EventSource stays in CONNECTING state
+        # until the first real event, which can be hours on an idle network.
+        yield ": connected\n\n"
+
         pubsub = redis_client.pubsub()
         pubsub.subscribe(['security_events', 'scan_updates', 'alert_updates', 'traffic_events', 'cve_updates'])
         
