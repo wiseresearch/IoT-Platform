@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
+    <title>Fleet Command Center · IoT Security Platform</title>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="fleet.css?v=20261118s">
+    <style>
+        :root {
+            --dash-bg: #f3f5fa;
+            --dash-panel: #ffffff;
+            --dash-panel-soft: #f8fafd;
+            --dash-text: #0f172a;
+            --dash-muted: #64748b;
+            --dash-faint: #94a3b8;
+            --dash-line: #e4e9f2;
+            --dash-line-strong: #d7deea;
+            --dash-teal: #0f9f8f;
+            --dash-blue: #3b6ef5;
+            --dash-amber: #e08a00;
+            --dash-red: #d64545;
+            --dash-violet: #7c5cf0;
+            --dash-shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 10px 30px -18px rgba(15, 23, 42, .22);
+        }
+        body[data-theme="dark"] {
+            --dash-bg: #0b0f17;
+            --dash-panel: #121826;
+            --dash-panel-soft: #0f1521;
+            --dash-text: #e7ecf5;
+            --dash-muted: #98a5b9;
+            --dash-faint: #6f7d92;
+            --dash-line: #222c3d;
+            --dash-line-strong: #2c3850;
+            --dash-shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 18px 40px -24px rgba(0, 0, 0, .65);
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; }
+        body {
+            background: var(--dash-bg);
+            color: var(--dash-text);
+            font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+        a { color: inherit; }
+        .app-sidebar {
+            position: fixed; inset: 0 auto 0 0; width: 250px; z-index: 1040;
+            display: flex; flex-direction: column;
+            background: #0b1220; border-right: 1px solid rgba(148, 163, 184, .14);
+            box-shadow: 14px 0 40px -34px rgba(2, 6, 23, .9);
+            transition: transform .25s ease;
+        }
+        .sidebar-head {
+            display: flex; align-items: center; justify-content: space-between; gap: .55rem;
+            padding: .95rem .8rem .85rem 1rem; border-bottom: 1px solid rgba(148, 163, 184, .12);
+        }
+        .navbar-brand {
+            display: inline-flex; align-items: center; gap: .6rem; min-width: 0;
+            color: #f8fafc; text-decoration: none; font-weight: 700;
+            font-size: .86rem; line-height: 1.18; letter-spacing: -.015em;
+        }
+        .brand-mark {
+            width: 34px; height: 34px; border-radius: 10px; display: inline-flex; flex: 0 0 auto;
+            align-items: center; justify-content: center; color: #fff; font-size: .95rem;
+            background: linear-gradient(135deg, #14b8a6, #2563eb);
+            box-shadow: 0 6px 16px -6px rgba(20, 184, 166, .7);
+        }
+        .sidebar-toggle {
+            width: 34px; height: 34px; flex: 0 0 auto; border-radius: .55rem;
+            display: inline-flex; align-items: center; justify-content: center;
+            border: 1px solid rgba(148, 163, 184, .24); background: rgba(148, 163, 184, .06);
+            color: #cbd5e1; font-size: .85rem; cursor: pointer;
+        }
+        .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: .18rem; padding: .8rem .65rem; overflow-y: auto; }
+        .nav-link {
+            display: flex; align-items: center; gap: .72rem;
+            color: #a9b5c8; text-decoration: none; font-size: .86rem; font-weight: 500;
+            padding: .6rem .72rem; border-radius: .55rem; border-left: 2px solid transparent;
+        }
+        .nav-link i { width: 1.1rem; text-align: center; opacity: .8; }
+        .nav-link:hover { color: #fff; background: rgba(148, 163, 184, .1); }
+        .nav-link.active {
+            color: #fff; background: rgba(20, 184, 166, .14);
+            border-left-color: #2dd4bf; box-shadow: inset 0 0 0 1px rgba(45, 212, 191, .12);
+        }
+        .nav-link.active i { color: #2dd4bf; opacity: 1; }
+        .sidebar-foot { display: flex; flex-direction: column; gap: .5rem; padding: .75rem .65rem .9rem; border-top: 1px solid rgba(148, 163, 184, .12); }
+        .btn-outline-light {
+            border: 1px solid rgba(148, 163, 184, .28); color: #cbd5e1; background: transparent;
+            font-size: .78rem; border-radius: .55rem; padding: .45rem .5rem; cursor: pointer;
+        }
+        .btn-outline-light:hover { background: rgba(148, 163, 184, .14); }
+        .nav-user-pill {
+            display: inline-flex; align-items: center; justify-content: center; gap: .45rem;
+            color: #94a3b8; font-size: .78rem; padding: .4rem .7rem; border-radius: .55rem;
+            border: 1px solid rgba(148, 163, 184, .16); background: rgba(148, 163, 184, .06);
+        }
+        .app-main { min-height: 100vh; margin-left: 250px; padding: 1.15rem 1.35rem 2rem; transition: margin-left .25s ease; }
+        body.sidebar-collapsed .app-sidebar { transform: translateX(-100%); }
+        body.sidebar-collapsed .app-main { margin-left: 0; }
+        .sidebar-reveal {
+            position: fixed; top: .8rem; left: .8rem; z-index: 1050;
+            width: 2.45rem; height: 2.45rem; border-radius: .65rem; display: none;
+            border: 1px solid rgba(148, 163, 184, .3); background: #0b1220; color: #e2e8f0; cursor: pointer;
+        }
+        body.sidebar-collapsed .sidebar-reveal { display: inline-flex; align-items: center; justify-content: center; }
+        body[data-theme="light"] .app-sidebar { background: #fff; border-color: #e8edf5; box-shadow: 10px 0 34px -30px rgba(15, 23, 42, .45); }
+        body[data-theme="light"] .navbar-brand { color: #0f172a; }
+        body[data-theme="light"] .nav-link { color: #52627a; }
+        body[data-theme="light"] .nav-link:hover { color: #0f172a; background: #eef2f8; }
+        body[data-theme="light"] .nav-link.active { color: #0f766e; background: #e6f7f4; border-left-color: #0d9488; }
+        body[data-theme="light"] .nav-link.active i { color: #0d9488; }
+        body[data-theme="light"] .sidebar-toggle { color: #475569; border-color: #dbe3ee; background: #f8fafc; }
+        body[data-theme="light"] .btn-outline-light { color: #475569; border-color: #dbe3ee; }
+        body[data-theme="light"] .nav-user-pill { color: #64748b; border-color: #e2e8f0; background: #f8fafc; }
+        .dash-eyebrow {
+            display: inline-flex; align-items: center; gap: 8px;
+            color: var(--dash-teal); font-size: .64rem; font-weight: 800;
+            letter-spacing: .14em; text-transform: uppercase;
+        }
+        .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dash-teal); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dash-teal) 18%, transparent); }
+        .fleet-matrix { display: flex; flex-direction: column; height: clamp(460px, 48vw, 580px); position: relative; }
+        .fleet-matrix svg { flex: 1; min-height: 0; width: 100%; display: block; }
+        @media (max-width: 900px) {
+            .app-main { margin-left: 0; padding: .9rem .85rem 1.5rem; }
+            .app-sidebar { width: min(82vw, 270px); transform: translateX(-100%); }
+            body:not(.sidebar-collapsed) .app-sidebar { transform: none; }
+            body.sidebar-collapsed .app-sidebar { transform: translateX(-100%); }
+            .sidebar-toggle { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <aside class="app-sidebar" id="app-sidebar">
+        <div class="sidebar-head">
+            <a class="navbar-brand" href="/">
+                <span class="brand-mark"><i class="fas fa-shield-halved"></i></span>
+                <span>IoT Security Platform</span>
+            </a>
+            <button class="sidebar-toggle" type="button" onclick="document.body.classList.toggle('sidebar-collapsed')" aria-label="Hide navigation">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+        <nav class="sidebar-nav" aria-label="Primary">
+            <a class="nav-link" href="/" onclick="goView('dashboard-view')"><i class="fas fa-tachometer-alt"></i><span>Dashboard</span></a>
+            <a class="nav-link active" href="fleet.html" aria-current="page"><i class="fas fa-diagram-project"></i><span>Fleet Command Center</span></a>
+            <a class="nav-link" href="/" onclick="goView('devices-view')"><i class="fas fa-network-wired"></i><span>Devices</span></a>
+            <a class="nav-link" href="/" onclick="goView('vulnerabilities-view')"><i class="fas fa-bug"></i><span>Vulnerabilities</span></a>
+            <a class="nav-link" href="/" onclick="goView('traffic-view')"><i class="fas fa-exchange-alt"></i><span>Traffic</span></a>
+            <a class="nav-link" href="/" onclick="goView('ids-view')"><i class="fas fa-shield-virus"></i><span>IDS</span></a>
+            <a class="nav-link" href="/" onclick="goView('incidents-view')"><i class="fas fa-exclamation-triangle"></i><span>Incidents</span></a>
+            <a class="nav-link" href="/" onclick="goView('scans-view')"><i class="fas fa-search"></i><span>Scans</span></a>
+        </nav>
+        <div class="sidebar-foot">
+            <button class="btn-outline-light" type="button" id="theme-toggle" onclick="toggleTheme()">
+                <i class="fas fa-moon me-1"></i><span id="theme-toggle-label">Dark</span>
+            </button>
+            <span class="nav-user-pill"><i class="fas fa-user-shield"></i> Admin</span>
+        </div>
+    </aside>
+    <button class="sidebar-reveal" type="button" onclick="document.body.classList.remove('sidebar-collapsed')" aria-label="Show navigation">
+        <i class="fas fa-bars"></i>
+    </button>
+
+    <div class="app-main">
+        <div id="fleet-view" class="dashboard-shell">
+            <section class="fleet-hero">
+                <div class="fleet-hero-copy">
+                    <div class="dash-eyebrow"><span class="live-dot"></span><span>Fleet operations</span><span class="fleet-conn" id="fleet-conn">connecting…</span></div>
+                    <h1>Fleet command center</h1>
+                    <p>One normalized state across <strong id="fleet-hero-count">—</strong> observable devices, with synchronized topology, bullseye and hex matrix.</p>
+                </div>
+                <div class="fleet-hero-actions">
+                    <div class="fleet-mode" role="group" aria-label="Data source">
+                        <button type="button" class="is-active" data-fleet-mode="live"><i class="fas fa-satellite-dish"></i> Live</button>
+                        <button type="button" data-fleet-mode="demo"><i class="fas fa-flask"></i> Simulation</button>
+                    </div>
+                    <button type="button" class="btn-dash-refresh" onclick="FleetOps.refresh()"><i class="fas fa-rotate"></i> Refresh</button>
+                </div>
+            </section>
+
+            <section class="fleet-kpis" id="fleet-kpis" aria-label="Fleet key indicators"></section>
+
+            <div class="fleet-ticker">
+                <span class="fleet-ticker-label"><i class="fas fa-bolt"></i> Unified stream</span>
+                <div class="fleet-ticker-track" id="fleet-ticker-track"><span class="fleet-ticker-empty">Waiting for fleet events…</span></div>
+            </div>
+
+            <section class="fleet-panel">
+                <header class="fleet-panel-head">
+                    <div class="fleet-panel-title">
+                        <span class="fleet-eyebrow">Diagram 1 · clustered force topology</span>
+                        <h2><i class="fas fa-diagram-project"></i> Gateway &amp; role clusters</h2>
+                        <span class="fleet-panel-sub">Collapsible clusters, roaming arcs, outage blast rings and the discovery quarantine perimeter.</span>
+                    </div>
+                    <div class="fleet-panel-tools">
+                        <div class="fleet-legend">
+                            <span><i style="--c: var(--fl-healthy)"></i>Healthy</span>
+                            <span><i style="--c: var(--fl-degraded)"></i>Degraded</span>
+                            <span><i style="--c: var(--fl-offline)"></i>Offline</span>
+                            <span class="lg-unidentified"><i></i>Unidentified</span>
+                        </div>
+                        <button class="fleet-tool" type="button" data-topo-action="expand">Expand all</button>
+                        <button class="fleet-tool" type="button" data-topo-action="collapse">Collapse</button>
+                        <button class="fleet-tool" type="button" data-topo-action="labels">Addresses</button>
+                        <button class="fleet-tool" type="button" data-topo-action="reset">Reset view</button>
+                    </div>
+                </header>
+                <div class="fleet-canvas fleet-topo" id="fleet-topo">
+                    <div class="fleet-empty" id="fleet-topo-empty"><i class="fas fa-satellite-dish"></i><span>No devices in the live snapshot yet.</span></div>
+                    <div class="fleet-hint"><i class="fas fa-hand-pointer"></i> Hover to highlight · click to pin · click again for diagnostics</div>
+                </div>
+            </section>
+
+            <div class="fleet-lower">
+                <section class="fleet-panel">
+                    <header class="fleet-panel-head">
+                        <div class="fleet-panel-title">
+                            <span class="fleet-eyebrow">Diagram 2 · health &amp; latency bullseye</span>
+                            <h2><i class="fas fa-bullseye"></i> Responsiveness rings</h2>
+                            <span class="fleet-panel-sub">Distance from the core maps live responsiveness; wedges separate device categories.</span>
+                        </div>
+                    </header>
+                    <div class="fleet-canvas fleet-bullseye" id="fleet-bullseye"></div>
+                </section>
+                <section class="fleet-panel">
+                    <header class="fleet-panel-head">
+                        <div class="fleet-panel-title">
+                            <span class="fleet-eyebrow">Diagram 3 · interactive telemetry matrix</span>
+                            <h2><i class="fas fa-border-all"></i> Hex-grid density map</h2>
+                            <span class="fleet-panel-sub">One hex per device, grouped by type or operational zone. No connection lines.</span>
+                        </div>
+                    </header>
+                    <div class="fleet-canvas fleet-matrix" id="fleet-matrix"></div>
+                </section>
+            </div>
+        </div>
+    </div>
+
+    <div class="fleet-tip" id="fleet-tip" role="tooltip"></div>
+    <div class="fleet-scrim" id="fleet-scrim" onclick="FleetOps.closeDrawer()"></div>
+    <aside class="fleet-drawer" id="fleet-drawer" aria-hidden="true" aria-label="Device diagnostics">
+        <div class="fleet-drawer-head" id="fleet-drawer-head"></div>
+        <div class="fleet-drawer-body" id="fleet-drawer-body"></div>
+    </aside>
+    <div class="fleet-toast" id="fleet-toast" role="status" aria-live="polite"></div>
+
+    <script>
+        (function () {
+            var saved = 'light';
+            try { saved = localStorage.getItem('dashboard_theme') || 'light'; } catch (e) { }
+            document.body.setAttribute('data-theme', saved);
+            var label = document.getElementById('theme-toggle-label');
+            if (label) label.textContent = saved === 'dark' ? 'Light' : 'Dark';
+        })();
+        function toggleTheme() {
+            var body = document.body;
+            var next = (body.getAttribute('data-theme') || 'light') === 'light' ? 'dark' : 'light';
+            body.setAttribute('data-theme', next);
+            try { localStorage.setItem('dashboard_theme', next); } catch (e) { }
+            var label = document.getElementById('theme-toggle-label');
+            if (label) label.textContent = next === 'dark' ? 'Light' : 'Dark';
+        }
+        function goView(viewId) {
+            try { localStorage.setItem('dashboard_active_view', viewId); } catch (e) { }
+            // The dashboard is a single cached document; bust it so the restore
+            // logic above runs against the current build instead of a stale copy.
+            location.href = '/?v=' + Date.now();
+        }
+        document.querySelectorAll('[data-fleet-mode]').forEach(function (b) {
+            b.addEventListener('click', function () { FleetOps.setMode(b.getAttribute('data-fleet-mode')); });
+        });
+        document.querySelectorAll('[data-topo-action]').forEach(function (b) {
+            b.addEventListener('click', function () {
+                var action = b.getAttribute('data-topo-action');
+                if (action === 'expand') FleetOps.expandAll();
+                else if (action === 'collapse') FleetOps.collapseAll();
+                else if (action === 'labels' && window.FleetTopoOps) { FleetTopoOps.toggleLabels(); b.classList.toggle('is-on'); }
+                else if (action === 'reset' && window.FleetTopoOps) FleetTopoOps.reset();
+            });
+        });
+    </script>
+    <script src="fleet-core.js?v=20261118s"></script>
+    <script src="fleet-topology.js?v=20261118s"></script>
+    <script src="fleet-bullseye.js?v=20261118s"></script>
+    <script src="fleet-matrix.js?v=20261118s"></script>
+    <script>
+        FleetOps.onShow();
+    </script>
+</body>
+</html>

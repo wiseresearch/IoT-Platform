@@ -14,6 +14,15 @@ import logging
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# Unified fleet state model + real-time event stream (/api/fleet/*).
+# Registered before the legacy routes so the shared model is available to
+# every visualisation in the dashboard.
+try:
+    from fleet_state import register_fleet_routes as _register_fleet_routes
+    _register_fleet_routes(app)
+except Exception as _fleet_exc:  # keep the gateway up if the module is missing
+    logging.getLogger(__name__).error("fleet state module unavailable: %s", _fleet_exc)
+
 # Configuration
 # Use env-provided JWT secret; fallback is ephemeral per process to avoid publishing static secrets.
 app.config['SECRET_KEY'] = os.getenv('JWT_SECRET') or secrets.token_hex(32)

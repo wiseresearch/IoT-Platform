@@ -1188,6 +1188,9 @@
             <a class="nav-link active" href="#" data-view="dashboard-view" onclick="showDashboard()">
                 <i class="fas fa-tachometer-alt"></i> <span data-i18n="navDashboard">Dashboard</span>
             </a>
+            <a class="nav-link" href="fleet.html">
+                <i class="fas fa-project-diagram"></i> <span>Fleet Command</span>
+            </a>
             <a class="nav-link" href="#" data-view="devices-view" onclick="showDevices()">
                 <i class="fas fa-network-wired"></i> <span data-i18n="navDevices">Devices</span>
             </a>
@@ -2409,6 +2412,10 @@
             const preservedHostInfo = localStorage.getItem('hostInfoCache');
             const preservedLanguage = localStorage.getItem('dashboard_language');
             const preservedSidebar = localStorage.getItem('dashboard_sidebar_collapsed');
+            // Keep a view requested by another page (e.g. fleet.html -> goView)
+            // across this storage reset, otherwise every cross-page nav lands
+            // back on the dashboard.
+            const preservedView = localStorage.getItem('dashboard_active_view');
             localStorage.clear();
             if (preservedHistory) {
                 localStorage.setItem('deviceHistoryCache', preservedHistory);
@@ -2427,6 +2434,9 @@
             }
             if (preservedSidebar) {
                 localStorage.setItem('dashboard_sidebar_collapsed', preservedSidebar);
+            }
+            if (preservedView) {
+                localStorage.setItem('dashboard_active_view', preservedView);
             }
             sessionStorage.clear();
         }
